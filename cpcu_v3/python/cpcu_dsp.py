@@ -64,12 +64,13 @@ SERVO_MAX_US    = [2500, 1953, 1953, 2002, 2002, 1733]
 # ══════════════════════════════════════════════════════════════════════
 
 def load_gestures(path=GESTURES_PATH):
-    """Load gestures.json. Returns (gestures_dict, emg_channels, confidence_cfg)
+    """Load gestures.json. Returns (gestures_dict, emg_channels, confidence_cfg, hysteresis)
     or defaults on failure."""
     defaults = (
         {"rest": {"mode": "freeze", "channels": {}}},
         [0, 1, 2],
-        {"curve": "quadratic", "floor_pct": 40, "ceil_pct": 85}
+        {"curve": "quadratic", "floor_pct": 40, "ceil_pct": 85},
+        {"rest_to_active": 4, "active_to_rest": 2, "active_to_active": 6}
     )
     try:
         with open(path) as f:
@@ -77,6 +78,7 @@ def load_gestures(path=GESTURES_PATH):
         gestures = gs.get("gestures", defaults[0])
         emg_ch   = gs.get("emg_channels", {}).get("active", defaults[1])
         conf_cfg = gs.get("confidence", defaults[2])
+        hyst_cfg = gs.get("hysteresis", defaults[3])
         servo_ch = gs.get("servo_channels", {})
         # resolve servo channel names to indices
         name_to_idx = {n: d["pca_ch"] for n, d in servo_ch.items()}
@@ -102,7 +104,7 @@ def load_gestures(path=GESTURES_PATH):
             gdef["_smooth_v"] = smoother_v
             gdef["_smooth_a"] = smoother_a
         print(f"[DSP] gestures.json: {list(gestures.keys())}", flush=True)
-        return gestures, emg_ch, conf_cfg
+        return gestures, emg_ch, conf_cfg, hyst_cfg
     except Exception as e:
         print(f"[DSP] gestures.json load failed: {e}, using defaults", flush=True)
         return defaults
@@ -291,9 +293,12 @@ def _uart_send(gesture, conf, feats):
 
 def run_inference(verbose=False, operator="default"):
     # ── load config ──
-    gestures, active_channels, conf_cfg = load_gestures()
+    gestures, active_channels, conf_cfg, hyst_cfg = load_gestures()
     num_ch = len(active_channels)
-    hysteresis_votes, grip_firm = load_runtime()
+    _, grip_firm = load_runtime()
+    hyst_r2a = hyst_cfg.get("rest_to_active", 4)
+    hyst_a2r = hyst_cfg.get("active_to_rest", 2)
+    hyst_a2a = hyst_cfg.get("active_to_active", 6)
     vel_overrides = load_velocity_map(operator)
 
     # apply velocity_map overrides to gesture rates
@@ -349,7 +354,7 @@ def run_inference(verbose=False, operator="default"):
     ipc = IPCBridge()
     ipc.set_dsp_ready()
     print(f"[DSP] ready. channels={active_channels} "
-          f"curve={conf_curve} votes={hysteresis_votes}", flush=True)
+          f"curve={conf_curve} hyst=r2a:{hyst_r2a}/a2r:{hyst_a2r}/a2a:{hyst_a2a}", flush=True)
 
     _uart_init()
 
@@ -429,8 +434,15 @@ def run_inference(verbose=False, operator="default"):
                 conf = float(probs[ai])
 
                 if conf > PROB_THRESH and label != current_state:
+                    # asymmetric hysteresis: different vote counts per transition
+                    if current_state == "rest":
+                        needed = hyst_r2a
+                    elif label == "rest":
+                        needed = hyst_a2r
+                    else:
+                        needed = hyst_a2a
                     consec_count += 1
-                    if consec_count >= hysteresis_votes:
+                    if consec_count >= needed:
                         current_state = label
                         consec_count = 0
                 else:

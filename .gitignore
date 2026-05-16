@@ -1,0 +1,30 @@
+# build artifacts
+build/
+*.o
+*.d
+cpcu_v2/build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# logs
+cpcu_v2/log/
+*.log
+
+# generated audio (regenerate with ./launch.sh generate-cues)
+cpcu_v2/config/audio_cues/_gen_*
+
+# datasets (too large for git)
+cpcu_v2/datasets/*.csv
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~

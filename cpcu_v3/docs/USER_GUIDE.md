@@ -325,7 +325,7 @@ The "rest" gesture cannot be removed.
 The system requires multiple consecutive ML predictions of the same
 class before switching gestures. This prevents jittery transitions.
 
-Current settings in gestures.json:
+Settings in gestures.json:
 
 ```json
 "hysteresis": {
