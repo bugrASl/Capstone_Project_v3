@@ -164,7 +164,7 @@ def load_runtime(path=None):
 
 def discover_model():
     """Find and load ML model. Returns (model, scaler) or (None, None).
-    Search order: MODEL_DIR/*.pkl, INSTALLED_MODEL/*.pkl, legacy .joblib."""
+    Search order: MODEL_DIR/*.pkl, INSTALLED_MODEL/*.pkl."""
     try:
         import joblib
     except ImportError:
@@ -182,14 +182,7 @@ def discover_model():
                     return cp["model"], cp["scaler"]
             except Exception as e:
                 print(f"[DSP] {pkl}: {e}", flush=True)
-        # legacy separate .joblib files
-        m_path = os.path.join(d, "hmi_svm_model_200hz.joblib")
-        s_path = os.path.join(d, "hmi_scaler_200hz.joblib")
-        if os.path.exists(m_path) and os.path.exists(s_path):
-            try:
-                return joblib.load(m_path), joblib.load(s_path)
-            except Exception as e:
-                print(f"[DSP] joblib load: {e}", flush=True)
+
 
     print(f"[DSP] no model found — feature-only mode", flush=True)
     return None, None

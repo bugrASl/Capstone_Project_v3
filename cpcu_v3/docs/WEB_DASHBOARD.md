@@ -535,8 +535,8 @@ the bridge isn't reachable from where you're testing.
 **Page loads but no data flows**: the kernel and bridge are both up,
 but dsp is feature-only mode (model files missing). The Overview tab
 still shows live state and per-channel RMS; only the gesture name and
-confidence are absent. Install `models/svm.joblib` and
-`models/scaler.joblib` to enable inference.
+confidence are absent. Install a trained `.pkl` model and
+run `./launch.sh set-model` to enable inference.
 
 ---
 

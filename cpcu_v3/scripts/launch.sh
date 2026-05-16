@@ -206,8 +206,8 @@ preflight_kernel() {
     [ -f "${PYTHON_INSTALL_DIR}/cpcu_dsp.py" ] \
         || warn "${PYTHON_INSTALL_DIR}/cpcu_dsp.py missing — re-run './launch.sh build'"
 
-    if ! ls "${MODEL_DIR}"/*.pkl "${MODEL_DIR}"/*.joblib >/dev/null 2>&1; then
-        warn "No ML model (.pkl or .joblib) in ${MODEL_DIR} — DSP will run feature-only"
+    if ! ls "${MODEL_DIR}"/*.pkl >/dev/null 2>&1; then
+        warn "No ML model (.pkl) in ${MODEL_DIR} — DSP will run feature-only"
         warn "  Place your trained model files in that directory and"
         warn "  send 'kill -HUP \$(pgrep cpcu_kernel)' to reload."
     fi
@@ -579,7 +579,7 @@ cmd_check() {
         warn_count=$((warn_count+1))
     fi
 
-    if ! ls "${MODEL_DIR}"/*.pkl "${MODEL_DIR}"/*.joblib >/dev/null 2>&1; then
+    if ! ls "${MODEL_DIR}"/*.pkl >/dev/null 2>&1; then
         warn "ML model not in ${MODEL_DIR} — DSP will run feature-only"
         warn_count=$((warn_count+1))
     fi
