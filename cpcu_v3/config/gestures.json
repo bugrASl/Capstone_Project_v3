@@ -1,0 +1,76 @@
+{
+    "schema_version": 4,
+    "model_path": "models/aleynask.pkl",
+
+    "audio_mode": "voice",
+    "audio_volume_pct": 80,
+
+    "servo_channels": {
+        "Base":    { "pca_ch": 0, "min_us": 498,  "max_us": 2500, "neutral_us": 1500 },
+        "Elbow":   { "pca_ch": 1, "min_us": 1074, "max_us": 1953, "neutral_us": 1500 },
+        "Forearm": { "pca_ch": 2, "min_us": 1074, "max_us": 1953, "neutral_us": 1500 },
+        "Wrist1":  { "pca_ch": 3, "min_us": 1001, "max_us": 2002, "neutral_us": 1500 },
+        "Wrist2":  { "pca_ch": 4, "min_us": 1001, "max_us": 2002, "neutral_us": 1500 },
+        "Gripper": { "pca_ch": 5, "min_us": 976,  "max_us": 1733, "neutral_us": 1500 }
+    },
+
+    "emg_channels": {
+        "active": [0, 1, 2],
+        "names": ["Forearm", "Biceps", "Triceps"]
+    },
+
+    "gestures": {
+        "rest": {
+            "mode": "freeze",
+            "audio": { "voice": "voice_rest", "freq_hz": 330, "freq_ms": 60 }
+        },
+        "flex": {
+            "mode": "velocity",
+            "channels": {
+                "Elbow": { "rate_us_s": 200 }
+            },
+            "smoother_override": {
+                "Elbow": { "velocity_us_s": 4000, "accel_us_s2": 3000 }
+            },
+            "audio": { "voice": "voice_flex", "freq_hz": 440, "freq_ms": 80 }
+        },
+        "ext": {
+            "mode": "velocity",
+            "channels": {
+                "Elbow":   { "rate_us_s": -200 },
+                "Gripper": { "rate_us_s": 200 }
+            },
+            "audio": { "voice": "voice_extend", "freq_hz": 660, "freq_ms": 80 }
+        },
+        "hand": {
+            "mode": "velocity",
+            "channels": {
+                "Gripper": { "rate_us_s": -400, "snap": true }
+            },
+            "grip_firm_us": 1080,
+            "audio": { "voice": "voice_grip", "freq_hz": 550, "freq_ms": 50 }
+        }
+    },
+
+    "audio_events": {
+        "system_start":    { "voice": "voice_system_start",    "freq_hz": 880, "freq_ms": 200 },
+        "system_stop":     { "voice": "voice_system_stop",     "freq_hz": 220, "freq_ms": 300 },
+        "safe_state":      { "voice": "voice_safe_state",      "freq_hz": 200, "freq_ms": 500 },
+        "link_lost":       { "voice": "voice_link_lost",       "freq_hz": 300, "freq_ms": 400 },
+        "link_recovered":  { "voice": "voice_link_recovered",  "freq_hz": 600, "freq_ms": 150 },
+        "low_battery":     { "voice": "voice_low_battery",     "freq_hz": 250, "freq_ms": 600 },
+        "calibration_done":{ "voice": "voice_calibration_done","freq_hz": 700, "freq_ms": 100 }
+    },
+
+    "confidence": {
+        "curve": "quadratic",
+        "floor_pct": 40,
+        "ceil_pct": 85
+    },
+
+    "hysteresis": {
+        "rest_to_active": 4,
+        "active_to_rest": 2,
+        "active_to_active": 6
+    }
+}
