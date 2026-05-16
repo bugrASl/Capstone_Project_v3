@@ -1,0 +1,71 @@
+{
+    "schema_version": 2,
+    "servo_min_us": [
+        498,
+        1074,
+        1074,
+        1001,
+        1001,
+        976
+    ],
+    "servo_max_us": [
+        2500,
+        1953,
+        1953,
+        2002,
+        2002,
+        1733
+    ],
+    "servo_bias_us": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+    ],
+    "smooth_velocity_us_per_s": [
+        5000,
+        5000,
+        5000,
+        5000,
+        5000,
+        5000
+    ],
+    "smooth_accel_us_per_s2": [
+        2000,
+        2000,
+        2000,
+        2000,
+        2000,
+        2000
+    ],
+    "smooth_deadband_us": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+    ],
+    "gravity_dir": [
+        0,
+        -1,
+        1,
+        0,
+        0,
+        0
+    ],
+    "gravity_scale_pct": [
+        100,
+        40,
+        30,
+        100,
+        100,
+        100
+    ],
+    "grip_open_us": 1700,
+    "grip_touch_us": 1200,
+    "grip_firm_us": 1100,
+    "grip_stall_recover_ms": 2000
+}
