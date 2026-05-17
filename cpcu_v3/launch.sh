@@ -1281,6 +1281,170 @@ EOF
 #  COMMAND: help
 # ════════════════════════════════════════════════════════════════════════
 
+
+print_v3_help() {
+cat << 'HELPEOF'
+
+  launch.sh — InfiniTech CPCU v3.0
+  ═══════════════════════════════════════════════════════════════
+  THIS IS THE ONLY SCRIPT YOU NEED. EVERY OPERATION GOES
+  THROUGH ./launch.sh <command>.
+  ═══════════════════════════════════════════════════════════════
+
+  SETUP & BUILD (once per Pi, then once per source change)
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh setup                         Pi one-time config
+    ./launch.sh setup-audio                   I2S DAC + speaker
+    ./launch.sh setup-uart                    UART debug output
+    ./launch.sh build                         Compile + install
+    ./launch.sh check                         Verify readiness
+
+  RUNNING THE SYSTEM
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh tui                           TUI dashboard
+    ./launch.sh tui --audio                   + voice/tone feedback
+    ./launch.sh tui --uart                    + UART debug to PC
+    ./launch.sh tui --with-ws                 + web dashboard
+    ./launch.sh tui --audio --uart --with-ws  all features
+    ./launch.sh tui --operator NAME           operator velocity profile
+    ./launch.sh ws                            web dashboard only
+    ./launch.sh kernel                        kernel only (for systemd)
+    ./launch.sh collect                       dataset capture mode
+    ./launch.sh signal                        signal testbench (live)
+    ./launch.sh smoother                      servo motion exerciser
+    ./launch.sh pca                           direct PCA9685 calibration
+    ./launch.sh menu                          interactive mode picker
+    ./launch.sh attach                        re-attach tmux session
+    ./launch.sh stop                          stop (safe servo shutdown)
+
+  TESTING
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh test-sw                       software tests (233 checks)
+    ./launch.sh test-ipc                      + IPC validation
+    ./launch.sh test-hw                       + hardware probes
+    ./launch.sh test-pca                      interactive servo check
+    ./launch.sh test-signal                   live signal integrity
+    ./launch.sh test-signal-demo              synthetic signal (no BSAU)
+    ./launch.sh test-safety-demo              fault injection demo
+    ./launch.sh test-system                   full system verification
+
+  EMG CHANNELS
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh set-channels 0 1 2            3-channel mode
+    ./launch.sh set-channels 0 1 2 3 4        5-channel mode
+    ./launch.sh set-channels 0 1 2 3 4 5 6 7  8-channel (full)
+                                               validates model match
+
+  SERVO MOTORS
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh add-motor Thumb 6             add on PCA channel 6
+    ./launch.sh edit-motor Gripper            edit limits (min/max/neutral)
+    ./launch.sh rename-motor Gripper Claw     rename (updates all refs)
+
+  GESTURES
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh add-gesture                   guided wizard (+ audio)
+    ./launch.sh edit-gesture flex             change servo mapping
+    ./launch.sh rename-gesture hand grip      rename gesture
+    ./launch.sh remove-gesture biceps         delete gesture
+
+  CALIBRATION & TUNING
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh grip-tune                     gripper firmness wizard
+    ./launch.sh calibrate                     rest noise + velocity (0-10)
+    ./launch.sh calibrate --operator NAME     per-operator profile
+    ./launch.sh calibrate --rest-only         noise floor only
+    ./launch.sh calibrate --vel-only          velocity preference only
+
+  AUDIO FEEDBACK (PCM5102A + PAM8403 + speaker)
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh audio                         show audio config
+    ./launch.sh audio off                     disable audio
+    ./launch.sh audio voice                   spoken word cues
+    ./launch.sh audio freq                    frequency tone cues
+    ./launch.sh audio volume 80               set volume (0-100%)
+    ./launch.sh audio test                    play test sound
+    ./launch.sh generate-cues                 generate voice .wav files
+
+  MODEL MANAGEMENT
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh set-model models/model_5ch.pkl  set active model
+    ./launch.sh set-model                       list available models
+
+  CONFIGURATION
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh show-config                   print full system config
+    ./launch.sh configure                     compile-time settings
+    ./launch.sh configure --show              show all compile values
+    ./launch.sh configure --diff              changes from defaults
+    ./launch.sh configure --reset             restore defaults
+
+  RELOAD (apply config changes without full restart)
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh reload                        all (runtime + DSP + audio)
+    ./launch.sh reload --dsp                  DSP pipeline only
+    ./launch.sh reload --audio                audio daemon only
+
+  UART DEBUG (to host PC via USB-UART adapter)
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh setup-uart                    enable UART on Pi 5
+    ./launch.sh tui --uart                    run with UART debug
+    Host: python3 scripts/uart_monitor.py --port /dev/ttyUSB0
+    Host: python3 scripts/uart_monitor.py --port COM3 --log data.csv
+
+  SERVICES (auto-start at boot)
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh install-service               kernel systemd unit
+    ./launch.sh install-ws-service            web dashboard service
+    ./launch.sh grant-caps                    re-apply RT capabilities
+
+  EXAMPLES
+  ─────────────────────────────────────────────────────────────
+
+    # fresh Pi setup (once):
+    ./launch.sh setup && ./launch.sh setup-audio
+    ./launch.sh build && ./launch.sh generate-cues && ./launch.sh check
+
+    # daily operation:
+    ./launch.sh tui --audio --with-ws
+
+    # add a servo motor and use it in a gesture:
+    ./launch.sh add-motor Thumb 6
+    ./launch.sh edit-motor Thumb
+    ./launch.sh add-gesture               # wizard asks which motors
+    ./launch.sh collect                    # record training data
+    ./launch.sh set-model models/new.pkl   # after retraining
+    ./launch.sh reload
+
+    # upgrade from 3 to 5 EMG channels:
+    ./launch.sh set-channels 0 1 2 3 4
+    ./launch.sh collect
+    ./launch.sh set-model models/model_5ch.pkl
+    ./launch.sh reload
+
+    # calibrate for a new operator:
+    ./launch.sh calibrate --operator ali
+    ./launch.sh tui --operator ali --audio
+
+    # rename things:
+    ./launch.sh rename-motor Gripper Claw
+    ./launch.sh rename-gesture hand grip
+
+    # switch audio mode:
+    ./launch.sh audio freq
+    ./launch.sh reload --audio
+
+    # tune gripper firmness:
+    ./launch.sh grip-tune
+
+    # UART debug to laptop:
+    ./launch.sh setup-uart    # once, then reboot
+    ./launch.sh tui --uart
+    # on laptop: python3 scripts/uart_monitor.py --port /dev/ttyUSB0
+
+HELPEOF
+}
+
 cmd_help() {
     local topic="${1:-}"
     case "${topic}" in
@@ -2239,165 +2403,3 @@ cmd_reload() {
 #  HELP TEXT
 # ══════════════════════════════════════════════════════════════════
 
-print_v3_help() {
-cat << 'HELPEOF'
-
-  launch.sh — InfiniTech CPCU v3.0
-  ═══════════════════════════════════════════════════════════════
-  THIS IS THE ONLY SCRIPT YOU NEED. EVERY OPERATION GOES
-  THROUGH ./launch.sh <command>.
-  ═══════════════════════════════════════════════════════════════
-
-  SETUP & BUILD (once per Pi, then once per source change)
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh setup                         Pi one-time config
-    ./launch.sh setup-audio                   I2S DAC + speaker
-    ./launch.sh setup-uart                    UART debug output
-    ./launch.sh build                         Compile + install
-    ./launch.sh check                         Verify readiness
-
-  RUNNING THE SYSTEM
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh tui                           TUI dashboard
-    ./launch.sh tui --audio                   + voice/tone feedback
-    ./launch.sh tui --uart                    + UART debug to PC
-    ./launch.sh tui --with-ws                 + web dashboard
-    ./launch.sh tui --audio --uart --with-ws  all features
-    ./launch.sh tui --operator NAME           operator velocity profile
-    ./launch.sh ws                            web dashboard only
-    ./launch.sh kernel                        kernel only (for systemd)
-    ./launch.sh collect                       dataset capture mode
-    ./launch.sh signal                        signal testbench (live)
-    ./launch.sh smoother                      servo motion exerciser
-    ./launch.sh pca                           direct PCA9685 calibration
-    ./launch.sh menu                          interactive mode picker
-    ./launch.sh attach                        re-attach tmux session
-    ./launch.sh stop                          stop (safe servo shutdown)
-
-  TESTING
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh test-sw                       software tests (233 checks)
-    ./launch.sh test-ipc                      + IPC validation
-    ./launch.sh test-hw                       + hardware probes
-    ./launch.sh test-pca                      interactive servo check
-    ./launch.sh test-signal                   live signal integrity
-    ./launch.sh test-signal-demo              synthetic signal (no BSAU)
-    ./launch.sh test-safety-demo              fault injection demo
-    ./launch.sh test-system                   full system verification
-
-  EMG CHANNELS
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh set-channels 0 1 2            3-channel mode
-    ./launch.sh set-channels 0 1 2 3 4        5-channel mode
-    ./launch.sh set-channels 0 1 2 3 4 5 6 7  8-channel (full)
-                                               validates model match
-
-  SERVO MOTORS
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh add-motor Thumb 6             add on PCA channel 6
-    ./launch.sh edit-motor Gripper            edit limits (min/max/neutral)
-    ./launch.sh rename-motor Gripper Claw     rename (updates all refs)
-
-  GESTURES
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh add-gesture                   guided wizard (+ audio)
-    ./launch.sh edit-gesture flex             change servo mapping
-    ./launch.sh rename-gesture hand grip      rename gesture
-    ./launch.sh remove-gesture biceps         delete gesture
-
-  CALIBRATION & TUNING
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh grip-tune                     gripper firmness wizard
-    ./launch.sh calibrate                     rest noise + velocity (0-10)
-    ./launch.sh calibrate --operator NAME     per-operator profile
-    ./launch.sh calibrate --rest-only         noise floor only
-    ./launch.sh calibrate --vel-only          velocity preference only
-
-  AUDIO FEEDBACK (PCM5102A + PAM8403 + speaker)
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh audio                         show audio config
-    ./launch.sh audio off                     disable audio
-    ./launch.sh audio voice                   spoken word cues
-    ./launch.sh audio freq                    frequency tone cues
-    ./launch.sh audio volume 80               set volume (0-100%)
-    ./launch.sh audio test                    play test sound
-    ./launch.sh generate-cues                 generate voice .wav files
-
-  MODEL MANAGEMENT
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh set-model models/model_5ch.pkl  set active model
-    ./launch.sh set-model                       list available models
-
-  CONFIGURATION
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh show-config                   print full system config
-    ./launch.sh configure                     compile-time settings
-    ./launch.sh configure --show              show all compile values
-    ./launch.sh configure --diff              changes from defaults
-    ./launch.sh configure --reset             restore defaults
-
-  RELOAD (apply config changes without full restart)
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh reload                        all (runtime + DSP + audio)
-    ./launch.sh reload --dsp                  DSP pipeline only
-    ./launch.sh reload --audio                audio daemon only
-
-  UART DEBUG (to host PC via USB-UART adapter)
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh setup-uart                    enable UART on Pi 5
-    ./launch.sh tui --uart                    run with UART debug
-    Host: python3 scripts/uart_monitor.py --port /dev/ttyUSB0
-    Host: python3 scripts/uart_monitor.py --port COM3 --log data.csv
-
-  SERVICES (auto-start at boot)
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh install-service               kernel systemd unit
-    ./launch.sh install-ws-service            web dashboard service
-    ./launch.sh grant-caps                    re-apply RT capabilities
-
-  EXAMPLES
-  ─────────────────────────────────────────────────────────────
-
-    # fresh Pi setup (once):
-    ./launch.sh setup && ./launch.sh setup-audio
-    ./launch.sh build && ./launch.sh generate-cues && ./launch.sh check
-
-    # daily operation:
-    ./launch.sh tui --audio --with-ws
-
-    # add a servo motor and use it in a gesture:
-    ./launch.sh add-motor Thumb 6
-    ./launch.sh edit-motor Thumb
-    ./launch.sh add-gesture               # wizard asks which motors
-    ./launch.sh collect                    # record training data
-    ./launch.sh set-model models/new.pkl   # after retraining
-    ./launch.sh reload
-
-    # upgrade from 3 to 5 EMG channels:
-    ./launch.sh set-channels 0 1 2 3 4
-    ./launch.sh collect
-    ./launch.sh set-model models/model_5ch.pkl
-    ./launch.sh reload
-
-    # calibrate for a new operator:
-    ./launch.sh calibrate --operator ali
-    ./launch.sh tui --operator ali --audio
-
-    # rename things:
-    ./launch.sh rename-motor Gripper Claw
-    ./launch.sh rename-gesture hand grip
-
-    # switch audio mode:
-    ./launch.sh audio freq
-    ./launch.sh reload --audio
-
-    # tune gripper firmness:
-    ./launch.sh grip-tune
-
-    # UART debug to laptop:
-    ./launch.sh setup-uart    # once, then reboot
-    ./launch.sh tui --uart
-    # on laptop: python3 scripts/uart_monitor.py --port /dev/ttyUSB0
-
-HELPEOF
-}
