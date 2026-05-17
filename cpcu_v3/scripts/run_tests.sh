@@ -226,7 +226,7 @@ if echo "$PHASES" | grep -q "1"; then
 
     ## Find or build test_codec
     CODEC_BIN=""
-    if [ -f ./test_codec ]; then
+    if false; then  # never use root-level binary (may be wrong arch)
         CODEC_BIN="./test_codec"
     elif [ -f build/test_codec ]; then
         CODEC_BIN="build/test_codec"

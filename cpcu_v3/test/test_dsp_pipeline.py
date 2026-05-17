@@ -25,9 +25,9 @@ What this test covers:
     6. process_window — feeds a 400-sample @ 2 kHz buffer and checks
        the full pipeline returns (cleaned, env, features) with the
        right shapes.
-    7. GESTURE_SERVO_MAP — every entry is a 6-tuple of valid servo µs.
+    7. gestures.json — valid structure, rest exists, servo refs valid.
     8. Constants — INPUT_FS_HZ=2000, TARGET_FS_HZ=200, DECIMATE_FACTOR=10,
-       WINDOW_SAMPLES_HI=400, NUM_SERVOS=6.
+       WINDOW_HI=400, NUM_SERVOS=6.
 
 History:
     Replaces the legacy test which imported from a
@@ -88,8 +88,7 @@ def test_api_surface():
 
     # Constants the rest of the system relies on
     for name in ("INPUT_FS_HZ", "TARGET_FS_HZ", "DECIMATE_FACTOR",
-                 "WINDOW_SAMPLES_HI", "NUM_SERVOS",
-                 "ACTIVE_CHANNELS", "GESTURE_SERVO_MAP"):
+                 "WINDOW_HI", "NUM_SERVOS"):
         ASSERT(hasattr(cpcu_dsp, name),
                f"cpcu_dsp.{name} is exported")
 
@@ -258,20 +257,20 @@ def test_process_window():
     return (cleaned, env, features) with the right shapes."""
     print("\n--- TB-DSP08: process_window ---")
 
-    from cpcu_dsp import process_window, WINDOW_SAMPLES_HI, WINDOW_SAMPLES_LO
+    from cpcu_dsp import process_window, WINDOW_HI, WINDOW_LO
 
     fs                  =   2000
-    t                   =   np.arange(WINDOW_SAMPLES_HI) / fs
+    t                   =   np.arange(WINDOW_HI) / fs
     # 100 Hz band-of-interest tone + 50 Hz mains we want notched out
     sig                 =   (0.4 * np.sin(2 * np.pi * 100 * t) +
                              0.3 * np.sin(2 * np.pi *  50 * t))
 
     cleaned, env, feat  =   process_window(sig)
 
-    ASSERT(len(cleaned) == WINDOW_SAMPLES_LO,
-           f"cleaned length = {len(cleaned)} == WINDOW_SAMPLES_LO ({WINDOW_SAMPLES_LO})")
-    ASSERT(len(env) == WINDOW_SAMPLES_LO,
-           f"env length = {len(env)} == WINDOW_SAMPLES_LO ({WINDOW_SAMPLES_LO})")
+    ASSERT(len(cleaned) == WINDOW_LO,
+           f"cleaned length = {len(cleaned)} == WINDOW_LO ({WINDOW_LO})")
+    ASSERT(len(env) == WINDOW_LO,
+           f"env length = {len(env)} == WINDOW_LO ({WINDOW_LO})")
     ASSERT(len(feat) == 4,
            f"feature count = {len(feat)} (expected 4)")
 
@@ -289,22 +288,22 @@ def test_process_window():
 # ══════════════════════════════════════════════════════════════════════
 
 def test_gesture_servo_map():
-    """Every entry must be a 6-tuple of valid servo microseconds."""
-    print("\n--- TB-DSP09: GESTURE_SERVO_MAP ---")
-
-    from cpcu_dsp import GESTURE_SERVO_MAP, NUM_SERVOS
-
-    ASSERT(len(GESTURE_SERVO_MAP) >= 1,
-           f"map has {len(GESTURE_SERVO_MAP)} entries (>= 1 required)")
-    ASSERT("rest" in GESTURE_SERVO_MAP,
-           "'rest' is in the map (always-safe fallback)")
-
-    for label, servos in GESTURE_SERVO_MAP.items():
-        ASSERT(len(servos) == NUM_SERVOS,
-               f"{label}: {len(servos)} servos == NUM_SERVOS ({NUM_SERVOS})")
-        for i, us in enumerate(servos):
-            ASSERT(500 <= us <= 2500,
-                   f"{label} servo[{i}] = {us} µs ∈ [500, 2500]")
+    """v3: validate gestures.json structure (replaces old GESTURE_SERVO_MAP test)."""
+    print("\n--- TB-DSP09: gestures.json validation ---")
+    import json, os
+    gs_path = os.path.join(os.path.dirname(__file__), "..", "config", "gestures.json")
+    ASSERT(os.path.exists(gs_path), f"gestures.json exists at {gs_path}")
+    with open(gs_path) as f:
+        gs = json.load(f)
+    gestures = gs.get("gestures", {})
+    servos = gs.get("servo_channels", {})
+    ASSERT(len(gestures) >= 1, f"has {len(gestures)} gestures (>= 1)")
+    ASSERT("rest" in gestures, "'rest' gesture exists")
+    ASSERT(gestures["rest"]["mode"] == "freeze", "rest is freeze mode")
+    for gname, gdef in gestures.items():
+        for sname in gdef.get("channels", {}):
+            ASSERT(sname in servos,
+                   f"{gname} references valid servo '{sname}'")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -316,7 +315,7 @@ def test_constants():
     print("\n--- TB-DSP10: constants ---")
 
     from cpcu_dsp import (INPUT_FS_HZ, TARGET_FS_HZ, DECIMATE_FACTOR,
-                          WINDOW_SAMPLES_HI, WINDOW_SAMPLES_LO, NUM_SERVOS)
+                          WINDOW_HI, WINDOW_LO, NUM_SERVOS)
 
     ASSERT(INPUT_FS_HZ == 2000,
            f"INPUT_FS_HZ = {INPUT_FS_HZ} (must match BSAU 2 kHz scan rate)")
@@ -324,10 +323,10 @@ def test_constants():
            f"TARGET_FS_HZ = {TARGET_FS_HZ} (must match training rate)")
     ASSERT(DECIMATE_FACTOR == INPUT_FS_HZ // TARGET_FS_HZ,
            f"DECIMATE_FACTOR = {DECIMATE_FACTOR} (= INPUT/TARGET)")
-    ASSERT(WINDOW_SAMPLES_HI == 400,
-           f"WINDOW_SAMPLES_HI = {WINDOW_SAMPLES_HI} (= 200ms @ 2kHz)")
-    ASSERT(WINDOW_SAMPLES_LO == 40,
-           f"WINDOW_SAMPLES_LO = {WINDOW_SAMPLES_LO} (= 200ms @ 200Hz)")
+    ASSERT(WINDOW_HI == 400,
+           f"WINDOW_HI = {WINDOW_HI} (= 200ms @ 2kHz)")
+    ASSERT(WINDOW_LO == 40,
+           f"WINDOW_LO = {WINDOW_LO} (= 200ms @ 200Hz)")
     ASSERT(NUM_SERVOS == 6,
            f"NUM_SERVOS = {NUM_SERVOS} (must match IPC_NUM_SERVOS)")
 
