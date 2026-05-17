@@ -24,7 +24,7 @@ import numpy as np
 
 IPC_SHM_PATH            =   "/dev/shm/cpcu_ipc"
 IPC_MAGIC               =   0x494E4654
-IPC_VERSION             =   0x0206          # IPC_ToolPresence + IPC_DspFiltered
+IPC_VERSION             =   0x0300          # IPC_ToolPresence + IPC_DspFiltered
 
 RING_SIZE               =   1024
 RING_MASK               =   RING_SIZE - 1
