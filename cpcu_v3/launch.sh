@@ -689,22 +689,38 @@ run_tui_tmux() {
     preflight_kernel
     preflight_tui
     local tui_bin="${RESOLVED_BIN}"
+    local features="KERNEL + SHELL + TUI"
+    [ "${WITH_WS:-0}" = "1" ] && features="${features} + WS"
+    [ "${WITH_AUDIO:-0}" = "1" ] && features="${features} + AUDIO"
+    [ "${WITH_UART:-0}" = "1" ] && features="${features} + UART"
+    [ "${OPERATOR}" != "default" ] && features="${features} (operator: ${OPERATOR})"
     if [ "${WITH_WS:-0}" = "1" ]; then
-        with_ws_preflight    || fatal "WS preflight failed"
-        log "Mode: TUI + WS (tmux: KERNEL + SHELL + TUI + WS)"
-    else
-        log "Mode: TUI (tmux: KERNEL + SHELL + TUI)"
+        with_ws_preflight || fatal "WS preflight failed"
     fi
+    log "Mode: ${features}"
     tmux_create_with_kernel || fatal "Couldn't bring up kernel"
     local tui_log
     tui_log=$(make_log_path "tui")
     tmux_add_window "TUI" "${tui_bin}"
     if [ "${WITH_WS:-0}" = "1" ]; then
-        local ws_log
+        local ws_log pi_ip
         ws_log=$(make_log_path "ws")
+        pi_ip=$(hostname -I | awk '{print $1}')
         write_ws_info
         tmux_add_window "WS" "bash -c '$(ws_window_cmd) 2>&1 | tee -a ${ws_log}'"
-        log "Web dashboard at http://$(hostname -I | awk '{print $1}'):8765"
+        log "═══════════════════════════════════════════════════"
+        log "Web dashboard:"
+        log "  Same network:  http://${pi_ip}:8765"
+        log "  Remote (SSH):  ssh -L 8765:localhost:8765 $(whoami)@${pi_ip}"
+        log "                 then http://localhost:8765"
+        log "═══════════════════════════════════════════════════"
+    fi
+    if [ "${WITH_AUDIO:-0}" = "1" ]; then
+        local audio_log
+        audio_log=$(make_log_path "audio")
+        local py_dir="${PYTHON_INSTALL_DIR:-${CPCU_ROOT:-$(dirname "$0")}/python}"
+        tmux_add_window "AUDIO" "bash -c 'CPCU_ROOT=${CPCU_ROOT:-$(dirname "$0")} python3 ${py_dir}/cpcu_audio_daemon.py 2>&1 | tee -a ${audio_log}'"
+        log "Audio feedback: $(python3 -c "import json; print(json.load(open('${CPCU_ROOT:-$(dirname "$0")}/config/gestures.json')).get('audio_mode','off'))" 2>/dev/null || echo "?")"
     fi
     log "Logs: ${LOG_DIR}/"
     tmux_attach_at "TUI"
@@ -1075,14 +1091,28 @@ cmd_attach() {
 }
 
 cmd_stop() {
-    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-        log "Killing tmux session '$SESSION_NAME'..."
-        tmux kill-session -t "$SESSION_NAME"
+    if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        log "No active session."
+        pkill -f cpcu_kernel 2>/dev/null || true
+        pkill -f cpcu_dsp.py 2>/dev/null || true
+        pkill -f cpcu_audio_daemon.py 2>/dev/null || true
         clear_ws_info
-        ok "Done."
-    else
-        log "No tmux session '$SESSION_NAME' running."
+        return
     fi
+    log "Stopping (safe servo shutdown)..."
+    # SIGTERM → kernel → cpcu_io runs cleanup:
+    #   PCA_SetAllNeutral → sleep 300ms → PCA_AllOff → NRF_PowerDown
+    pkill -TERM cpcu_kernel 2>/dev/null || true
+    pkill -TERM -f cpcu_dsp.py 2>/dev/null || true
+    pkill -TERM -f cpcu_audio_daemon.py 2>/dev/null || true
+    log "Waiting for servo neutral + disable..."
+    sleep 1.5
+    tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+    sleep 0.5
+    pkill -9 -f cpcu_kernel 2>/dev/null || true
+    pkill -9 -f cpcu_dsp.py 2>/dev/null || true
+    clear_ws_info
+    ok "Stopped. Servos neutral and disabled."
 }
 
 
@@ -1688,14 +1718,29 @@ shift || true
 # We strip the flag here from $@ so the remaining args pass cleanly
 # through to the underlying command.
 WITH_WS=0
+WITH_AUDIO=0
+WITH_UART=0
+OPERATOR="default"
 NEW_ARGS=()
 for arg in "$@"; do
     case "${arg}" in
         --with-ws|--ws) WITH_WS=1 ;;
-        *)              NEW_ARGS+=("${arg}") ;;
+        --audio)        WITH_AUDIO=1 ;;
+        --uart)         WITH_UART=1 ;;
+        --operator)     _NEXT_IS_OPERATOR=1 ;;
+        *)
+            if [ "${_NEXT_IS_OPERATOR:-0}" = "1" ]; then
+                OPERATOR="${arg}"
+                _NEXT_IS_OPERATOR=0
+            else
+                NEW_ARGS+=("${arg}")
+            fi
+            ;;
     esac
 done
 set -- "${NEW_ARGS[@]+"${NEW_ARGS[@]}"}"
+export CPCU_OPERATOR="${OPERATOR}"
+[ "${WITH_UART}" = "1" ] && export CPCU_UART_DEBUG="/dev/ttyAMA0"
 
 case "${MODE}" in
     -h|--help|help)         cmd_help "$@" ;;
@@ -1746,6 +1791,26 @@ case "${MODE}" in
     grant-caps)             cmd_grant_caps ;;
     install-service)        cmd_install_service ;;
     install-ws-service)     cmd_install_ws_service ;;
+
+    # v3.0 commands
+    setup-audio)            cmd_setup_audio "$@" ;;
+    setup-uart)             cmd_setup_uart "$@" ;;
+    grip-tune)              run_grip_tune "$@" ;;
+    calibrate)              run_calibrate "$@" ;;
+    add-gesture)            run_add_gesture "$@" ;;
+    remove-gesture)         cmd_remove_gesture "$@" ;;
+    rename-gesture)         cmd_rename_gesture "$@" ;;
+    edit-gesture)           cmd_edit_gesture "$@" ;;
+    add-motor)              cmd_add_motor "$@" ;;
+    edit-motor)             cmd_edit_motor "$@" ;;
+    rename-motor)           cmd_rename_motor "$@" ;;
+    set-channels)           run_set_channels "$@" ;;
+    set-model)              cmd_set_model "$@" ;;
+    generate-cues)          run_generate_cues "$@" ;;
+    audio)                  cmd_audio "$@" ;;
+    show-config)            cmd_show_config ;;
+    show-gestures)          cmd_show_gestures ;;
+    reload)                 cmd_reload "$@" ;;
 
     *)
         err "Unknown command: ${MODE}"
