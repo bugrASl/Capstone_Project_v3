@@ -643,7 +643,6 @@ void draw_page_overview(int r, IPC_Context *ipc,
     memcpy(servo, (const void *)ipc->motor->servo_us, sizeof(servo));
     uint8_t gesture     =   ipc->motor->gesture_id;
     uint8_t confidence  =   ipc->motor->confidence;
-    float batt_v = 0.0f;  /* v3: battery not sampled */
 
     /*===== HEALTH SUMMARY BANNER (rolled up from page 6) =====
      * One line showing green/yellow/red per subsystem so the user
@@ -861,7 +860,6 @@ void draw_page_radio(int r, IPC_Context *ipc,
     memset(&latest, 0, sizeof(latest));
     if(head > 0) latest = ipc->ring[(head - 1) & IPC_SENSOR_RING_MASK];
 
-    float batt_v = 0.0f;  /* v3: battery not sampled */
 
     /* IO heartbeat age (how long since cpcu_io updated heartbeat timestamp).
      * The natural ceiling is HEARTBEAT_INTERVAL_US (~100 ms), so thresholds
@@ -1318,13 +1316,7 @@ void draw_page_health(int r, IPC_Context *ipc,
     else
         ADD_ROW("Pkt integrity", 0, "%u seq gaps", gaps);
 
-    /* 6. Battery */
-    // if(batt_v < 2.7f && latest.vbat_raw > 0)
-    // ADD_ROW("Battery",     2, "%.2f V  (< 2.7 V critical, SAFE trip)", batt_v);
-    // else if(batt_v < 3.0f && latest.vbat_raw > 0)
-    // ADD_ROW("Battery",     1, "%.2f V  (< 3.0 V warning)", batt_v);
-    else
-    // ADD_ROW("Battery",     0, "%.2f V  (pack OK)", batt_v);
+    /* v3: battery section removed (BSAU not sampling) */
 
     /* 7. DSP pipeline */
     if(!dsp_rdy)
@@ -1513,7 +1505,6 @@ void draw_page_health(int r, IPC_Context *ipc,
     /* Helper macro: evaluate a requirement and draw one row */
     #define REQ_ROW(id, name, pass_cond, fmt, ...) do {         r++;         int _p = (pass_cond);         if(_p) req_pass++; else req_fail++;         attron(COLOR_PAIR(_p ? CP_GOOD : CP_BAD) | A_BOLD);         mvprintw(r, 2, "[%s]", _p ? "PASS" : "FAIL");         attroff(COLOR_PAIR(_p ? CP_GOOD : CP_BAD) | A_BOLD);         attron(COLOR_PAIR(CP_DIM));         printw("  %-12s %-28s ", id, name);         attroff(COLOR_PAIR(CP_DIM));         printw(fmt, __VA_ARGS__);     } while(0)
 
-    float batt_v = 0.0f;  /* v3: battery not sampled */
     uint32_t sample_rate_est = pkt_rate * 2;  /* 2 samples per packet */
 
     /* ── SYS-REQ-01: End-to-End Latency ── */
