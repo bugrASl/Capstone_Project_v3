@@ -615,7 +615,7 @@ def run_inference(verbose=False, operator="default"):
 
 def run_calibrate(seconds):
     """Collect rest-state samples, compute 3*std per channel, save thresholds."""
-    _, active_channels, _ = load_gestures()
+    _, active_channels, _, _ = load_gestures()
     num_ch = len(active_channels)
     labels = [f"s{i+1}" for i in range(num_ch)]
 

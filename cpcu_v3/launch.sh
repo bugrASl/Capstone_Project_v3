@@ -288,7 +288,7 @@ tmux_create_with_kernel() {
 
     tmux new-session -d -s "$SESSION_NAME" -n "KERNEL" \
         -x "$_cols" -y "$_rows" \
-        "bash -c 'cd ${BIN_DIR} && exec taskset -c 0 ./cpcu_kernel --log 2>&1 | tee -a ${kernel_log}'"
+        "bash -c 'cd ${CPCU_ROOT} && exec taskset -c 0 ${BIN_DIR}/cpcu_kernel --log 2>&1 | tee -a ${kernel_log}'"
 
     # Wait briefly for the new session to be reachable. tmux's set-option
     # calls below otherwise race with the daemon and emit harmless but
@@ -348,19 +348,17 @@ tmux_attach_at() {
     fi
 
     echo
-    log "${C_BLD}Session ready.${C_RST} You're attached to the ${C_GRN}${target_window}${C_RST} window."
-    log "Keys (press ${C_BLD}Ctrl-b${C_RST} first, then the letter):"
-    log "  ${C_GRN}Ctrl-b 0${C_RST}   switch to KERNEL window (kernel + io + dsp logs)"
-    log "  ${C_GRN}Ctrl-b 1${C_RST}   switch to SHELL window  (run ./launch.sh stop here)"
-    log "  ${C_GRN}Ctrl-b 2${C_RST}   switch to ${target_window} window"
-    log "  ${C_GRN}Ctrl-b w${C_RST}   pick a window from a menu"
-    log "  ${C_GRN}Ctrl-b d${C_RST}   detach (kernel keeps running in background)"
-    log "  ${C_GRN}Ctrl-b ?${C_RST}   tmux help"
-    log "Re-attach later: ${C_BLD}./launch.sh attach${C_RST}"
-    log "Stop everything: ${C_BLD}./launch.sh stop${C_RST}"
-    sleep 2
+    log "${C_BLD}Session ready.${C_RST} Attaching to ${C_GRN}${target_window}${C_RST}..."
+    log "  ${C_GRN}Ctrl-b d${C_RST} to detach  |  ${C_GRN}./launch.sh stop${C_RST} to stop"
+    sleep 0.5
 
-    tmux attach -t "$SESSION_NAME"
+    if [ -n "${TMUX:-}" ]; then
+        # already inside tmux — switch client instead of attach
+        tmux switch-client -t "${SESSION_NAME}:${target_window}" 2>/dev/null \
+            || tmux attach-session -t "$SESSION_NAME"
+    else
+        exec tmux attach-session -t "$SESSION_NAME"
+    fi
     TMUX_OWNED=""
 
     echo
@@ -2102,44 +2100,41 @@ print('  Gestures: ' + ', '.join(g.get('gestures',{}).keys()))
 "
         exit 1
     fi
-    python3 << PYEOF
+    python3 -c "
 import json, sys
-with open("${GS}") as f: g = json.load(f)
-gs = g.get("gestures", {})
-if "${name}" not in gs:
-    print(f"  '${name}' not found.")
-    sys.exit(1)
-gd = gs["${name}"]
-sc = g.get("servo_channels", {})
-motors = list(sc.keys())
-print(f"\n  Editing gesture: ${name}")
-print(f"  Mode: {gd.get('mode', '?')}")
-print(f"  Available motors: {motors}")
-print(f"  Current mapping: {gd.get('channels', {})}")
-print(f"\n  Enter new servo mappings (empty line to finish):")
-channels = {}
-while True:
-    line = input("  Motor Rate(us/s) [e.g. Gripper -400]: ").strip()
-    if not line: break
-    parts = line.split()
-    if len(parts) != 2:
-        print("  Format: MotorName Rate")
-        continue
-    mname, rate = parts[0], int(parts[1])
-    if mname not in sc:
-        print(f"  Unknown motor: {mname}. Available: {motors}")
-        continue
-    channels[mname] = {"rate_us_s": rate}
-    snap = input(f"  {mname} snap mode? (y/n) [n]: ").strip()
-    if snap.lower() == 'y':
-        channels[mname]["snap"] = True
-if channels:
-    gd["channels"] = channels
-    with open("${GS}", "w") as f: json.dump(g, f, indent=4)
-    print(f"\n  \033[32m✓\033[0m Updated '{name}' → {channels}")
-else:
-    print("  No changes.")
-PYEOF
+with open('${GS}') as f: g = json.load(f)
+if '${name}' not in g.get('gestures',{}):
+    print(f\"  '${name}' not found.\"); sys.exit(1)
+gd = g['gestures']['${name}']
+print(f\"  Gesture: ${name}  mode={gd.get('mode','?')}\")
+print(f\"  Motors: {list(g.get('servo_channels',{}).keys())}\")
+print(f\"  Current: {gd.get('channels',{})}\")
+"
+    echo "  Enter motor mappings (MotorName Rate), empty to finish:"
+    local channels="{"
+    local first=1
+    while true; do
+        read -rp "  Motor Rate: " line
+        [ -z "$line" ] && break
+        local mname=$(echo "$line" | awk '{print $1}')
+        local rate=$(echo "$line" | awk '{print $2}')
+        [ -z "$rate" ] && { echo "  Format: MotorName Rate"; continue; }
+        [ $first -eq 0 ] && channels="${channels},"
+        read -rp "  ${mname} snap? (y/n) [n]: " sn
+        local snap="false"
+        [[ "$sn" =~ ^[yY] ]] && snap="true"
+        channels="${channels} \"${mname}\": {\"rate_us_s\": ${rate}, \"snap\": ${snap}}"
+        first=0
+    done
+    channels="${channels} }"
+    [ "$first" -eq 1 ] && { echo "  No changes."; return; }
+    python3 -c "
+import json
+with open('${GS}') as f: g = json.load(f)
+g['gestures']['${name}']['channels'] = ${channels}
+with open('${GS}', 'w') as f: json.dump(g, f, indent=4)
+print('  \033[32m✓\033[0m Updated.')
+"
 }
 
 # ── add-motor ──
@@ -2178,25 +2173,31 @@ cmd_edit_motor() {
         err "Usage: ./launch.sh edit-motor <name>"
         exit 1
     fi
-    python3 << PYEOF
+    python3 -c "
 import json, sys
-with open("${GS}") as f: g = json.load(f)
-sc = g.get("servo_channels", {})
-if "${name}" not in sc:
-    print(f"  Motor '${name}' not found. Available: {list(sc.keys())}")
-    sys.exit(1)
-sd = sc["${name}"]
-print(f"\n  Motor: ${name}  PCA ch{sd['pca_ch']}")
-print(f"  Current: min={sd['min_us']} max={sd['max_us']} neutral={sd['neutral_us']}")
-mn = input(f"  min_us [{sd['min_us']}]: ").strip()
-mx = input(f"  max_us [{sd['max_us']}]: ").strip()
-ne = input(f"  neutral_us [{sd['neutral_us']}]: ").strip()
-if mn: sd["min_us"] = int(mn)
-if mx: sd["max_us"] = int(mx)
-if ne: sd["neutral_us"] = int(ne)
-with open("${GS}", "w") as f: json.dump(g, f, indent=4)
-print(f"  \033[32m✓\033[0m Updated: min={sd['min_us']} max={sd['max_us']} neutral={sd['neutral_us']}")
-PYEOF
+with open('${GS}') as f: g = json.load(f)
+sc = g.get('servo_channels', {})
+if '${name}' not in sc:
+    print(f\"  Not found. Available: {list(sc.keys())}\"); sys.exit(1)
+sd = sc['${name}']
+print(f\"  Motor: ${name}  PCA ch{sd['pca_ch']}\")
+print(f\"  Current: min={sd['min_us']} max={sd['max_us']} neutral={sd['neutral_us']}\")
+"
+    read -rp "  min_us: " mn
+    read -rp "  max_us: " mx
+    read -rp "  neutral_us: " ne
+    [ -z "$mn" ] && [ -z "$mx" ] && [ -z "$ne" ] && { echo "  No changes."; return; }
+    python3 -c "
+import json
+with open('${GS}') as f: g = json.load(f)
+sd = g['servo_channels']['${name}']
+mn, mx, ne = '${mn}', '${mx}', '${ne}'
+if mn: sd['min_us'] = int(mn)
+if mx: sd['max_us'] = int(mx)
+if ne: sd['neutral_us'] = int(ne)
+with open('${GS}', 'w') as f: json.dump(g, f, indent=4)
+print(f\"  \033[32m✓\033[0m min={sd['min_us']} max={sd['max_us']} neutral={sd['neutral_us']}\")
+"
 }
 
 # ── set-model ──

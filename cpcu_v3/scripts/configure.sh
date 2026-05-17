@@ -89,7 +89,6 @@ TUNABLES=(
     # BSAU radio (channel only — BSAU_MODE selection is multi-line and
     # not amenable to simple #define editing; edit bsau_config.h by hand
     # for now and rebuild via STM32CubeIDE)
-    "nrf-channel|bsau_v2/Core/Inc/bsau_app.h|NRF_CHANNEL|76|0|125|NRF24L01 channel (0-125)"
 )
 
 #------------------------------------------------------------------------------
@@ -220,6 +219,10 @@ do_set() {
         return 1
     }
     IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
+        # skip if target file not in this repo
+        local fpath="${CPCU_ROOT}/${file}"
+        [ ! -f "${fpath}" ] && fpath="${REPO_ROOT}/${file}"
+        [ ! -f "${fpath}" ] && continue
     validate "${flagname}" "${newval}" "${minv}" "${maxv}" || return 1
     local old; old="$(read_value "${file}" "${define}")"
     if [ "${old}" = "${newval}" ]; then
@@ -241,6 +244,10 @@ do_show_one() {
         return 1
     }
     IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
+        # skip if target file not in this repo
+        local fpath="${CPCU_ROOT}/${file}"
+        [ ! -f "${fpath}" ] && fpath="${REPO_ROOT}/${file}"
+        [ ! -f "${fpath}" ] && continue
     local val; val="$(read_value "${file}" "${define}")"
     printf "%-20s = %-20s  (default %s, range %s..%s)\n" \
         "${define}" "${val}" "${defval}" "${minv}" "${maxv}"
@@ -256,8 +263,12 @@ do_show_all() {
     echo
     for entry in "${TUNABLES[@]}"; do
         IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
+        # skip if target file not in this repo
+        local fpath="${CPCU_ROOT}/${file}"
+        [ ! -f "${fpath}" ] && fpath="${REPO_ROOT}/${file}"
+        [ ! -f "${fpath}" ] && continue
         case "${scope}" in
-            bsau) [[ "${file}" == bsau_v2/* ]] || continue ;;
+            bsau) continue ;;  # bsau tunables removed (separate repo)
             cpcu) [[ "${file}" == include/* ]] || continue ;;
         esac
         local val; val="$(read_value "${file}" "${define}")"
@@ -274,6 +285,10 @@ do_diff() {
     local count=0
     for entry in "${TUNABLES[@]}"; do
         IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
+        # skip if target file not in this repo
+        local fpath="${CPCU_ROOT}/${file}"
+        [ ! -f "${fpath}" ] && fpath="${REPO_ROOT}/${file}"
+        [ ! -f "${fpath}" ] && continue
         local val; val="$(read_value "${file}" "${define}")"
         if [ "${val}" != "${defval}" ]; then
             printf "  %-30s ${G}%-12s${N} (default ${B}%s${N})\n" \
@@ -292,6 +307,10 @@ do_reset() {
     echo -e "${Y}[configure]${N} Resetting compile-time tunables to defaults..."
     for entry in "${TUNABLES[@]}"; do
         IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
+        # skip if target file not in this repo
+        local fpath="${CPCU_ROOT}/${file}"
+        [ ! -f "${fpath}" ] && fpath="${REPO_ROOT}/${file}"
+        [ ! -f "${fpath}" ] && continue
         local val; val="$(read_value "${file}" "${define}")"
         if [ "${val}" != "${defval}" ]; then
             write_value "${file}" "${define}" "${defval}"
@@ -342,8 +361,12 @@ do_interactive() {
     echo
     for entry in "${TUNABLES[@]}"; do
         IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
+        # skip if target file not in this repo
+        local fpath="${CPCU_ROOT}/${file}"
+        [ ! -f "${fpath}" ] && fpath="${REPO_ROOT}/${file}"
+        [ ! -f "${fpath}" ] && continue
         case "${scope}" in
-            bsau) [[ "${file}" == bsau_v2/* ]] || continue ;;
+            bsau) continue ;;  # bsau tunables removed (separate repo)
             cpcu) [[ "${file}" == include/* ]] || continue ;;
         esac
         local val; val="$(read_value "${file}" "${define}")"

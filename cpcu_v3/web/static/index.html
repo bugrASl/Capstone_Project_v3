@@ -1,0 +1,1260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CPCU Dashboard</title>
+<style>
+/*
+ * CPCU Dashboard — bugrASl, April 2026, v2.4.0
+ *
+ * Single-page-with-tabs dashboard for the prosthetic-hand CPCU.
+ * Connects to the bridge at the URL we were served from (so
+ * no hardcoded IP). Read-only by design; no input controls
+ * affect the running system.
+ *
+ * Layout:
+ *   - sticky header with connection pill and bridge meta
+ *   - tab strip below header
+ *   - one panel per tab; active panel is shown, others hidden
+ *
+ * Visual style is deliberately plain (Pi terminal aesthetic).
+ * No frameworks, no build step, no fonts loaded. Theme follows
+ * prefers-color-scheme.
+ */
+
+:root {
+    --bg: #fafafa;
+    --bg-card: #ffffff;
+    --fg: #1a1a1a;
+    --fg-muted: #666;
+    --border: #e0e0e0;
+    --accent: #185fa5;
+    --good: #0f6e56;
+    --warn: #ba7517;
+    --bad:  #a32d2d;
+    --plot-grid: rgba(0, 0, 0, 0.07);
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --bg-card: #232323;
+        --fg: #e6e6e6;
+        --fg-muted: #999;
+        --border: #333;
+        --accent: #7BB6F0;
+        --good: #5DCAA5;
+        --warn: #FAC775;
+        --bad:  #F09595;
+        --plot-grid: rgba(255, 255, 255, 0.08);
+    }
+}
+* { box-sizing: border-box; }
+body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 14px;
+    line-height: 1.5;
+}
+header {
+    position: sticky; top: 0;
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex; align-items: center; gap: 16px;
+    flex-wrap: wrap;
+    z-index: 10;
+}
+header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+.pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 12px;
+    font-size: 12px; font-weight: 500;
+    background: var(--border);
+}
+.pill.connected     { background: rgba(15, 110, 86, 0.15); color: var(--good); }
+.pill.connecting    { background: rgba(186, 117, 23, 0.15); color: var(--warn); }
+.pill.disconnected  { background: rgba(163, 45, 45, 0.15); color: var(--bad); }
+.pill .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.meta {
+    margin-left: auto;
+    font-size: 12px; color: var(--fg-muted);
+    font-family: monospace;
+}
+nav.tabs {
+    display: flex; gap: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-card);
+    padding: 0 20px;
+    overflow-x: auto;
+}
+nav.tabs button {
+    background: none; border: none;
+    padding: 14px 20px;
+    color: var(--fg-muted);
+    font-size: 15px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    white-space: nowrap;
+}
+nav.tabs button:hover { color: var(--fg); }
+nav.tabs button.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+}
+main {
+    padding: 20px;
+    max-width: none;
+    margin: 0 auto;
+}
+.panel { display: none; }
+.panel.active { display: block; }
+
+.card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+}
+.card h2 {
+    margin: 0 0 12px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; font-family: monospace; font-size: 13px; }
+.kv dt { color: var(--fg-muted); }
+.kv dd { margin: 0; }
+
+/* Overview top row: system + gesture side by side */
+.overview-top { display: grid; grid-template-columns: 1fr 1.5fr; gap: 16px; margin-bottom: 16px; }
+@media (max-width: 700px) { .overview-top { grid-template-columns: 1fr; } }
+
+.banner {
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    margin-bottom: 16px;
+}
+.banner.locked  { background: var(--border); color: var(--fg-muted); }
+.banner.editing { background: rgba(15, 110, 86, 0.15); color: var(--good); }
+.banner.parking { background: rgba(186, 117, 23, 0.15); color: var(--warn); }
+.banner.bad     { background: rgba(163, 45, 45, 0.15); color: var(--bad); }
+
+.gesture-card { display: flex; align-items: baseline; gap: 16px; }
+.gesture-name { font-size: 42px; font-weight: 500; font-family: monospace; }
+.gesture-conf { font-size: 22px; color: var(--fg-muted); }
+
+.confbar-row { display: grid; grid-template-columns: 90px 1fr 50px; gap: 10px; align-items: center; font-family: monospace; font-size: 13px; margin: 5px 0; }
+.confbar-track { background: var(--border); border-radius: 4px; height: 18px; overflow: hidden; }
+.confbar-fill  { background: var(--accent); height: 100%; transition: width 120ms ease; }
+.confbar-fill.active { background: var(--good); }
+.rms-row { display: grid; grid-template-columns: 40px 1fr 70px; gap: 10px; align-items: center; font-family: monospace; font-size: 13px; margin: 4px 0; }
+.rms-track { background: var(--border); border-radius: 3px; height: 14px; overflow: hidden; }
+.rms-fill  { background: var(--accent); height: 100%; transition: width 120ms ease; opacity: 0.8; }
+
+.wave-toggle { display: flex; gap: 8px; margin-bottom: 12px; }
+.wave-toggle button {
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--fg);
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+}
+.wave-toggle button.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+.wave-canvas-wrap {
+    position: relative;
+    height: calc(100vh - 210px);
+    min-height: 480px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px;
+}
+canvas { display: block; width: 100%; height: 100%; }
+
+.stub {
+    text-align: center;
+    color: var(--fg-muted);
+    padding: 60px 20px;
+    font-style: italic;
+}
+
+.diag-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+}
+@media (max-width: 900px) { .diag-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 500px) { .diag-grid { grid-template-columns: 1fr; } }
+.metric {
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 14px;
+    border: 1px solid var(--border);
+}
+.metric-label { font-size: 12px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.metric-value { font-size: 26px; font-weight: 500; font-family: monospace; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+    <h1>CPCU Dashboard</h1>
+    <span id="conn-pill" class="pill connecting"><span class="dot"></span><span id="conn-text">connecting...</span></span>
+    <span class="meta" id="meta-line"></span>
+</header>
+
+<nav class="tabs">
+    <button class="active" data-tab="overview">Overview</button>
+    <button data-tab="waves">Waves</button>
+    <button data-tab="spectrum">Spectrum</button>
+    <button data-tab="tools">Tools</button>
+</nav>
+
+<main>
+
+<!-- ============== OVERVIEW ============== -->
+<section id="panel-overview" class="panel active">
+    <div id="banner" class="banner locked">Edit mode: LOCKED — press 'e' on the TUI's CONFIG page to enter</div>
+
+    <div class="overview-top">
+        <div class="card" style="margin-bottom:0">
+            <h2>System</h2>
+            <dl class="kv">
+                <dt>state</dt><dd id="ov-state">—</dd>
+                <dt>io_ready</dt><dd id="ov-io">—</dd>
+                <dt>dsp_ready</dt><dd id="ov-dsp">—</dd>
+                <dt>io heartbeat</dt><dd id="ov-hb">—</dd>
+            </dl>
+        </div>
+        <div class="card" style="margin-bottom:0">
+            <h2>Current gesture</h2>
+            <div class="gesture-card">
+                <span class="gesture-name" id="ov-gesture">—</span>
+                <span class="gesture-conf" id="ov-conf">— %</span>
+            </div>
+            <div id="ov-confbars" style="margin-top: 12px;"></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Per-channel RMS</h2>
+        <div id="ov-rms"></div>
+    </div>
+
+    <div class="card">
+        <h2>Diagnostics</h2>
+        <div class="diag-grid" id="ov-diag"></div>
+    </div>
+
+    <div class="card">
+        <h2>System Requirements (Live)</h2>
+        <div id="ov-sysreq" style="font-family: monospace; font-size: 13px; line-height: 1.8;"></div>
+    </div>
+</section>
+
+<!-- ============== WAVES ============== -->
+<section id="panel-waves" class="panel">
+    <div class="wave-toggle">
+        <button class="active" data-stream="raw">Raw envelope (50 Hz)</button>
+        <button data-stream="filtered">Filtered envelope (200 Hz)</button>
+        <button data-stream="both">Both</button>
+    </div>
+    <div class="wave-canvas-wrap">
+        <canvas id="wave-canvas"></canvas>
+    </div>
+    <div class="card" style="margin-top: 12px;">
+        <h2>Notes</h2>
+        <p style="font-size: 13px; color: var(--fg-muted); margin: 0;">
+            Raw = mean-absolute deviation over 20 ms windows on 12-bit ADC, normalized to 0..1
+            full-scale. Filtered = post 20 - 95 Hz bandpass + 50 Hz notch + 3 Hz envelope LP,
+            from cpcu_dsp.py's per-window output.
+        </p>
+    </div>
+</section>
+
+<!-- ============== SPECTRUM ============== -->
+<section id="panel-spectrum" class="panel">
+    <div class="card">
+        <h2>Channel</h2>
+        <div id="spec-ch-buttons" style="display: flex; gap: 4px; flex-wrap: wrap;"></div>
+    </div>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+        <div class="card">
+            <h2>Raw spectrum (0 &ndash; 1000 Hz)</h2>
+            <div style="position: relative; height: calc(50vh - 160px); min-height: 240px;">
+                <canvas id="spec-static-canvas"></canvas>
+            </div>
+            <p style="font-size:12px;color:var(--fg-muted);margin:8px 0 0">Full-band 256-pt FFT, Hann window, raw ADC at 2 kHz. Res &asymp; 7.8 Hz/bin.</p>
+        </div>
+
+    </div>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+        <div class="card">
+            <h2>Raw waterfall (last 60s)</h2>
+            <div style="position: relative; height: calc(50vh - 160px); min-height: 240px;">
+                <canvas id="spec-water-canvas"></canvas>
+            </div>
+            <p style="font-size:12px;color:var(--fg-muted);margin:8px 0 0">Time grows downward. Brighter = more energy.</p>
+        </div>
+
+    </div>
+</section>
+
+<!-- ============== TOOLS ============== -->
+<section id="panel-tools" class="panel">
+    <div class="card">
+        <h2>Live tools</h2>
+        <p style="font-size: 12px; color: var(--fg-muted); margin: 0 0 12px;">
+            Side tools that opt into publishing their state to <code>IPC_ToolPresence</code>.
+            Tools are listed here only while they're running and within the
+            2-second heartbeat freshness window.
+        </p>
+        <div id="tools-list">
+            <div style="color: var(--fg-muted); font-style: italic; padding: 20px; text-align: center;">
+                no tools running
+            </div>
+        </div>
+    </div>
+    <div class="card">
+        <h2>Reference</h2>
+        <dl class="kv">
+            <dt>slot 0</dt><dd>pca_testbench &nbsp;<small style="color: var(--fg-muted);">(only visible when run instead of cpcu_kernel — bench-only)</small></dd>
+            <dt>slot 1</dt><dd>signal_testbench</dd>
+            <dt>slots 2-7</dt><dd>reserved for future tools</dd>
+        </dl>
+    </div>
+</section>
+
+</main>
+
+<script>
+/*
+ * Dashboard JS — single file, no build step.
+ *
+ * State is kept in plain globals; we get tens of frames per second
+ * and need to redraw cheaply, so reactivity frameworks would be
+ * overkill. WebSocket auto-reconnects with exponential backoff
+ * capped at 5 seconds so a brief disconnect doesn't leave the
+ * user staring at a stale page.
+ */
+
+const wsURL = (location.protocol === 'https:' ? 'wss://' : 'ws://')
+              + location.host + '/ws';
+
+let ws = null;
+let reconnectMs = 250;
+let waveStream = 'raw';
+/* Model class names — must match aleynask.pkl model.classes_ order */
+const MODEL_CLASSES = ['ext', 'flex', 'hand', 'rest'];
+let waveZoomCh = -1;  /* -1=all, 0-7=zoomed into one channel */
+
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+/* ============================================================
+ * Tabs
+ * ============================================================ */
+$$('nav.tabs button').forEach(btn => {
+    btn.addEventListener('click', () => {
+        $$('nav.tabs button').forEach(b => b.classList.remove('active'));
+        $$('main .panel').forEach(p => p.classList.remove('active'));
+        btn.classList.add('active');
+        $('#panel-' + btn.dataset.tab).classList.add('active');
+        /* v2.4.1: paint immediately on switch — without this the panel
+         * is blank until the next data frame arrives (up to 100 ms for
+         * state, 50 ms for waves). Cheap because the data is already
+         * in lastWaves / specHistory. */
+        if(btn.dataset.tab === 'waves')    renderWaves();
+        if(btn.dataset.tab === 'spectrum') renderSpec();
+    });
+});
+
+$$('.wave-toggle button').forEach(btn => {
+    btn.addEventListener('click', () => {
+        $$('.wave-toggle button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        waveStream = btn.dataset.stream;
+        renderWaves();
+    });
+});
+
+/* ============================================================
+ * Connection pill
+ * ============================================================ */
+function setPill(state, text) {
+    const p = $('#conn-pill');
+    p.className = 'pill ' + state;
+    $('#conn-text').textContent = text;
+}
+
+/* ============================================================
+ * State frame handlers
+ * ============================================================ */
+let lastState = null;
+let lastWaves = null;
+
+function applyState(d) {
+    lastState = d;
+    $('#meta-line').textContent
+        = `IPC v0x${(d.bridge.ipc_version).toString(16).padStart(4,'0')}`
+        + ` · t=${(d.bridge.now_us / 1e6).toFixed(1)}s`;
+
+    /* System */
+    $('#ov-state').textContent = `${d.system_state} (${d.system_state_id})`;
+    $('#ov-state').style.color = ({running: 'var(--good)', safe: 'var(--bad)'}[d.system_state]) || '';
+    $('#ov-io').textContent = d.io_ready ? 'yes' : 'no';
+    $('#ov-dsp').textContent = d.dsp_ready ? 'yes' : 'no';
+    $('#ov-hb').textContent = (d.io_heartbeat_age_us / 1000).toFixed(0) + ' ms ago';
+
+    /* Edit-mode banner */
+    const em = d.edit_mode;
+    const bn = $('#banner');
+    if(!em.request)            { bn.className = 'banner locked';   bn.textContent = "Edit mode: LOCKED — press 'e' on the TUI's CONFIG page to enter"; }
+    else if(em.active)         { bn.className = 'banner editing';  bn.textContent = 'Edit mode: EDITING — arm parked, someone is tuning'; }
+    else if(!em.dsp_ack)       { bn.className = 'banner bad';      bn.textContent = 'Edit mode: DSP UNRESPONSIVE — handshake timed out'; }
+    else                       { bn.className = 'banner parking';  bn.textContent = 'Edit mode: PARKING ARM... waiting for SMOOTH_AllSettled'; }
+
+    /* Gesture + confidence bars */
+    $('#ov-gesture').textContent = d.dsp.gesture || '—';
+    $('#ov-conf').textContent = (d.dsp.confidence * 100).toFixed(0) + ' %';
+
+    const cb = $('#ov-confbars');
+    cb.innerHTML = '';
+    if(d.dsp.class_confidence) {
+        d.dsp.class_confidence.forEach((p, i) => {
+            const isActive = i === d.dsp.active_class;
+            const row = document.createElement('div');
+            row.className = 'confbar-row';
+            if(isActive) row.style.fontWeight = '600';
+            const label = MODEL_CLASSES[i] || `class ${i}`;
+            row.innerHTML = `
+                <span style="color:${isActive ? 'var(--good)' : 'var(--fg-muted)'};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}${isActive ? ' ◄' : ''}</span>
+                <div class="confbar-track">
+                    <div class="confbar-fill ${isActive ? 'active' : ''}" style="width: ${(p*100).toFixed(0)}%"></div>
+                </div>
+                <span style="min-width:40px;text-align:right">${(p*100).toFixed(0)}%</span>`;
+            cb.appendChild(row);
+        });
+    }
+
+    /* Live SYS-REQ compliance */
+    /* Compute live packet rate by diffing consecutive state frames */
+    const _now = Date.now();
+    if(!window._prevPkts) { window._prevPkts = 0; window._prevT = _now; window._pktRate = 0; }
+    const _pkts = d.diag ? (d.diag.io_pkts_received || 0) : 0;
+    const _dt = (_now - window._prevT) / 1000;
+    if(_dt > 0.5) {
+        window._pktRate = (_pkts - window._prevPkts) / _dt;
+        window._prevPkts = _pkts; window._prevT = _now;
+    }
+
+    const sr = $('#ov-sysreq');
+    if(sr && d.diag) {
+        const pktRate = Math.round(window._pktRate);
+        const gaps = d.diag.io_seq_gaps || 0;
+        const lossRate = _pkts > 0 ? gaps / _pkts : 0;
+        const state = d.system_state;
+        const safeEntries = d.diag.io_safe_entries || 0;
+        const dspLat = d.diag.dsp_max_latency_us || 0;
+        const battV = d.battery_voltage || 0;
+        const e2e = (dspLat / 1000) + 200 + 20;
+
+        const dspReady = d.dsp_ready || 0;
+        const infCount = d.diag ? (d.diag.dsp_inferences || 0) : 0;
+        const ringOvf = d.diag ? (d.diag.io_ring_overflows || 0) : 0;
+        const gripStalls = d.diag ? (d.diag.io_gripper_stalls || 0) : 0;
+        const nrfStatus = d.diag ? (d.diag.io_nrf_init_status || 0) : 0;
+
+        /* Track uptime from first state frame */
+        if(!window._bootT) window._bootT = Date.now();
+        const uptimeMin = Math.floor((Date.now() - window._bootT) / 60000);
+        const uptimeSec = Math.floor(((Date.now() - window._bootT) % 60000) / 1000);
+
+        const reqs = [
+            ['SYS-REQ-01', 'E2E latency < 300 ms',      e2e < 300,             e2e.toFixed(0) + ' ms'],
+            ['SYS-REQ-03a','Battery (not sampled)',       true, 'N/A (bypassed)'],
+            ['SYS-REQ-03b','Uptime >= 40 min',           uptimeMin >= 40,       uptimeMin + ' min ' + uptimeSec + ' s'],
+            ['SYS-REQ-04a','Packet loss < 1%',           lossRate < 0.01,       (lossRate * 100).toFixed(3) + ' %'],
+            ['SYS-REQ-04b','Inference active',            dspReady && infCount > 0, dspReady ? 'active' : 'inactive'],
+            ['SYS-REQ-04c','50 Hz notch (PLI)',          dspReady === 1,        dspReady ? 'Q=30 active' : 'DSP off'],
+            ['SYS-REQ-05', 'Radio > 900 pkt/s',         pktRate > 900,         pktRate + ' pkt/s'],
+            ['SYS-REQ-06', 'Sample rate >= 2 kHz',      pktRate >= 950,        (pktRate * 2) + ' Hz'],
+            ['SYS-REQ-07', 'DSP bandpass 20-450 Hz',    dspReady === 1,        dspReady ? 'Butterworth active' : 'DSP off'],
+            ['SYS-REQ-08a','Safety FSM = RUNNING',       state === 1,           ['INIT','RUNNING','SAFE'][state] || '?'],
+            ['SYS-REQ-08b','Zero SAFE entries',          safeEntries === 0,     safeEntries + ' entries'],
+            ['SYS-REQ-08c','Servo limits enforced',      true,                  'clamped by PCA driver'],
+            ['SYS-REQ-08d','Fail-safe armed',            state <= 2,            state === 2 ? 'ACTIVE (neutral)' : 'armed'],
+            ['SYS-REQ-09', 'Servo update >= 40 Hz',     pktRate > 900,         pktRate > 900 ? '50 Hz' : 'degraded'],
+            ['SUB-RING',   'Ring zero overflows',         ringOvf === 0,         ringOvf + ' overflows'],
+            ['SUB-GRIP',   'Gripper no stalls',           gripStalls === 0,      gripStalls + ' stalls'],
+            ['SUB-NRF',    'NRF init OK',                 nrfStatus === 0,       nrfStatus === 0 ? 'OK' : 'FAILED'],
+        ];
+
+        let pass = 0, fail = 0;
+        let html = '';
+        reqs.forEach(([id, name, ok, detail]) => {
+            const color = ok ? '#0f6e56' : '#dc2626';
+            const tag = ok ? 'PASS' : 'FAIL';
+            html += '<div style="display:grid;grid-template-columns:100px 200px 60px 1fr;gap:8px;align-items:center">'
+                  + '<span style="color:var(--fg-muted)">' + id + '</span>'
+                  + '<span>' + name + '</span>'
+                  + '<span style="color:' + color + ';font-weight:600">[' + tag + ']</span>'
+                  + '<span style="color:var(--fg-muted);font-size:12px">' + detail + '</span>'
+                  + '</div>';
+            if(ok) pass++; else fail++;
+        });
+
+        const allPass = fail === 0;
+        html += '<div style="margin-top:8px;padding:6px 12px;border-radius:6px;font-weight:600;'
+              + 'background:' + (allPass ? 'rgba(15,110,86,0.1)' : 'rgba(220,38,38,0.1)') + ';'
+              + 'color:' + (allPass ? '#0f6e56' : '#dc2626') + '">'
+              + pass + ' PASS  ' + fail + ' FAIL'
+              + (allPass ? '  — ALL SYSTEM REQUIREMENTS MET' : '') + '</div>';
+        sr.innerHTML = html;
+    }
+
+    /* RMS bars — use dedicated rms-row class for narrow channel labels */
+    const rmsEl = $('#ov-rms');
+    rmsEl.innerHTML = '';
+    if(d.dsp.channel_rms) {
+        const peak = Math.max(...d.dsp.channel_rms, 0.01);
+        d.dsp.channel_rms.forEach((v, i) => {
+            const row = document.createElement('div');
+            row.className = 'rms-row';
+            row.innerHTML = `
+                <span style="color:var(--fg-muted)">ch${i}</span>
+                <div class="rms-track">
+                    <div class="rms-fill" style="width: ${(v/peak*100).toFixed(0)}%"></div>
+                </div>
+                <span style="font-size:12px">${v.toFixed(4)}</span>`;
+            rmsEl.appendChild(row);
+        });
+    }
+
+    /* Diagnostics tiles */
+    const diagEl = $('#ov-diag');
+    diagEl.innerHTML = '';
+    const counters = [
+        ['rx packets',      d.diag.io_pkts_received],
+        ['rx dropped',      d.diag.io_pkts_dropped],
+        ['ring overflows',  d.diag.io_ring_overflows],
+        ['seq gaps',        d.diag.io_seq_gaps],
+        ['safe entries',    d.diag.io_safe_entries],
+        ['gripper stalls',  d.diag.io_gripper_stalls],
+        ['dsp inferences',  d.diag.dsp_inferences],
+        ['dsp max us',      d.diag.dsp_max_latency_us],
+    ];
+    counters.forEach(([k, v]) => {
+        const m = document.createElement('div');
+        m.className = 'metric';
+        m.innerHTML = `<div class="metric-label">${k}</div><div class="metric-value">${v == null ? '—' : v.toLocaleString()}</div>`;
+        diagEl.appendChild(m);
+    });
+
+    /* v2.4.1: render Tools tab from the same state frame's tools[] array. */
+    renderTools(d);
+}
+
+/* ============================================================
+ * Waves drawing
+ * ============================================================ */
+const waveCanvas = $('#wave-canvas');
+const waveCtx = waveCanvas.getContext('2d');
+
+function applyWaves(d) {
+    lastWaves = d;
+    if($('#panel-waves').classList.contains('active')) renderWaves();
+    /* v2.4.1: feed Spectrum tab's FFT/waterfall history. We do this
+     * regardless of which tab is active so the waterfall keeps
+     * accumulating history while the user is on Overview/Waves. */
+    pushSpecFrames(d);
+}
+
+function renderWaves() {
+    if(!lastWaves) return;
+    const dpr = window.devicePixelRatio || 1;
+    const r = waveCanvas.getBoundingClientRect();
+    waveCanvas.width  = Math.floor(r.width * dpr);
+    waveCanvas.height = Math.floor(r.height * dpr);
+    waveCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const W = r.width, H = r.height;
+    const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
+    waveCtx.fillStyle = isDark ? '#1a1a1a' : '#ffffff';
+    waveCtx.fillRect(0, 0, W, H);
+
+    const N_CH = 8;
+    const padL = 32, padR = 8, padT = 8, padB = 16;
+    const plotW = W - padL - padR;
+    const trackH = (H - padT - padB) / N_CH;
+
+    /* Visible channels: all 8 or just the zoomed one */
+    const visChs = (waveZoomCh >= 0) ? [waveZoomCh] : Array.from({length: N_CH}, (_, i) => i);
+    const chH = (H - padT - padB) / visChs.length;
+
+    /* Per-channel: alternating bg + thick separator + zero line + label */
+    for(let idx = 0; idx < visChs.length; idx++) {
+        const ch = visChs[idx];
+        const yTop = padT + idx * chH;
+
+        /* Alternating background */
+        if(idx % 2 === 1) {
+            waveCtx.fillStyle = isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)';
+            waveCtx.fillRect(padL, yTop, plotW, chH);
+        }
+
+        /* Thick solid separator between channels */
+        if(idx > 0) {
+            waveCtx.strokeStyle = isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.4)';
+            waveCtx.lineWidth = 2;
+            waveCtx.beginPath();
+            waveCtx.moveTo(0, yTop);
+            waveCtx.lineTo(W, yTop);
+            waveCtx.stroke();
+        }
+
+        /* Zero line */
+        const yMid = yTop + chH / 2;
+        waveCtx.strokeStyle = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)';
+        waveCtx.lineWidth = 0.5;
+        waveCtx.beginPath();
+        waveCtx.moveTo(padL, yMid);
+        waveCtx.lineTo(padL + plotW, yMid);
+        waveCtx.stroke();
+
+        /* Channel label */
+        waveCtx.fillStyle = isDark ? '#aaa' : '#555';
+        waveCtx.font = (waveZoomCh >= 0) ? 'bold 14px monospace' : '12px monospace';
+        waveCtx.fillText('ch' + ch, 4, yMid + 4);
+    }
+
+    /* Zoom hint */
+    if(waveZoomCh >= 0) {
+        waveCtx.fillStyle = isDark ? '#FAC775' : '#854F0B';
+        waveCtx.font = '11px sans-serif';
+        waveCtx.fillText('Zoomed ch' + waveZoomCh + ' — click anywhere to show all channels', padL + 8, padT + 14);
+    }
+
+    /* Wave traces. Both raw and filtered are normalized to [0..1]
+     * envelopes; we'll display each track around its zero line at the
+     * top of the track, with values growing downward to 0.5 of the
+     * track height. Both streams overlay the same track so the user
+     * can compare amplitude. */
+    const drawStream = (data, color, n_samples) => {
+        if(!data) return;
+        for(let idx = 0; idx < visChs.length; idx++) {
+            const ch = visChs[idx];
+            const series = data[ch];
+            if(!series || !series.length) continue;
+            waveCtx.strokeStyle = color;
+            waveCtx.lineWidth = (waveZoomCh >= 0) ? 2 : 1.2;
+            waveCtx.beginPath();
+            const yTop = padT + idx * chH;
+            for(let i = 0; i < series.length; i++) {
+                const x = padL + (i / (series.length - 1)) * plotW;
+                const v = series[i] == null ? 0 : Math.abs(series[i]);
+                const y = yTop + chH - Math.min(v * chH, chH * 0.95);
+                if(i === 0) waveCtx.moveTo(x, y);
+                else waveCtx.lineTo(x, y);
+            }
+            waveCtx.stroke();
+        }
+    };
+
+    if(waveStream === 'raw' || waveStream === 'both') {
+        drawStream(lastWaves.raw, isDark ? '#7BB6F0' : '#185FA5', lastWaves.raw_n_samples);
+    }
+    if((waveStream === 'filtered' || waveStream === 'both') && lastWaves.filtered_present) {
+        drawStream(lastWaves.filtered, isDark ? '#5DCAA5' : '#0F6E56', lastWaves.filtered_n_samples);
+    }
+
+    if((waveStream === 'filtered' || waveStream === 'both') && !lastWaves.filtered_present) {
+        waveCtx.fillStyle = isDark ? '#FAC775' : '#854F0B';
+        waveCtx.font = '13px sans-serif';
+        waveCtx.fillText('filtered stream not yet published — waiting for cpcu_dsp.py to write IPC_DspFiltered',
+                         padL + 8, padT + 16);
+    }
+}
+
+/* Click wave canvas to zoom into a single channel, click again to unzoom */
+document.getElementById('wave-canvas').addEventListener('click', (e) => {
+    const rect = e.target.getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    if(waveZoomCh >= 0) {
+        waveZoomCh = -1;
+    } else {
+        const ch = Math.floor((y / rect.height) * 8);
+        if(ch >= 0 && ch < 8) waveZoomCh = ch;
+    }
+    renderWaves();
+});
+window.addEventListener('resize', renderWaves);
+
+/* ============================================================
+ * Spectrum tab — browser-side FFT + waterfall (v2.4.1)
+ * ============================================================ */
+
+let specChannel = 0;     /* selected channel for Spectrum tab */
+const N_FFT = 256;       /* matches raw_full_n_samples from bridge */
+const FS_HZ = 2000;      /* matches raw_full_fs_hz */
+
+/* Per-channel FFT-magnitude history for the waterfall.
+ * 60 seconds × 20 Hz updates = 1200 frames, but we cap at a smaller
+ * value for memory + render speed. A frame is N_FFT/2 magnitudes
+ * (positive-frequency bins only) = 128 floats. */
+const WATERFALL_ROWS = 600;          /* ~30 s at 20 Hz */
+const N_BINS = N_FFT / 2;            /* 128 */
+const specHistory = Array.from({length: 8}, () =>
+    Array.from({length: WATERFALL_ROWS}, () => new Float32Array(N_BINS))
+);
+const specHistoryHead = [0,0,0,0,0,0,0,0];
+const specHistoryFilled = [0,0,0,0,0,0,0,0];
+
+/* Hann window precomputed once. */
+const hannWin = new Float32Array(N_FFT);
+for(let i = 0; i < N_FFT; i++) {
+    hannWin[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (N_FFT - 1)));
+}
+
+/* In-place radix-2 FFT. Operates on parallel real+imag arrays.
+ * Standard Cooley-Tukey, decimation-in-time, bit-reversal first. */
+function fftInPlace(re, im) {
+    const n = re.length;
+    /* Bit-reversal permutation */
+    let j = 0;
+    for(let i = 1; i < n; i++) {
+        let bit = n >> 1;
+        for(; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if(i < j) {
+            let t = re[i]; re[i] = re[j]; re[j] = t;
+                t = im[i]; im[i] = im[j]; im[j] = t;
+        }
+    }
+    /* Butterflies */
+    for(let len = 2; len <= n; len <<= 1) {
+        const half = len >> 1;
+        const ang = -2 * Math.PI / len;
+        const wRe = Math.cos(ang);
+        const wIm = Math.sin(ang);
+        for(let i = 0; i < n; i += len) {
+            let curRe = 1, curIm = 0;
+            for(let k = 0; k < half; k++) {
+                const tRe = curRe * re[i+k+half] - curIm * im[i+k+half];
+                const tIm = curRe * im[i+k+half] + curIm * re[i+k+half];
+                re[i+k+half] = re[i+k] - tRe;
+                im[i+k+half] = im[i+k] - tIm;
+                re[i+k] += tRe;
+                im[i+k] += tIm;
+                const nRe = curRe * wRe - curIm * wIm;
+                const nIm = curRe * wIm + curIm * wRe;
+                curRe = nRe; curIm = nIm;
+            }
+        }
+    }
+}
+
+/* Compute magnitude spectrum from raw_full[ch] (256 int16 samples).
+ * 1) DC removal (subtract mean)
+ * 2) Hann window
+ * 3) FFT
+ * 4) magnitude = sqrt(re^2 + im^2), normalized
+ * Returns Float32Array of length N_BINS (positive frequencies). */
+function computeFFT(samples) {
+    const n = samples.length;
+    if(n !== N_FFT) return null;
+
+    /* DC removal */
+    let sum = 0;
+    for(let i = 0; i < n; i++) sum += samples[i];
+    const mean = sum / n;
+
+    /* Window + de-mean */
+    const re = new Float32Array(n);
+    const im = new Float32Array(n);
+    for(let i = 0; i < n; i++) {
+        re[i] = (samples[i] - mean) * hannWin[i];
+    }
+    fftInPlace(re, im);
+
+    /* Magnitude, normalized by (N/2) — Hann-window correction is
+     * applied implicitly; we don't need absolute calibration here,
+     * the dashboard is for spotting *features* not measuring volts. */
+    const mag = new Float32Array(N_BINS);
+    const scale = 2 / n;
+    for(let k = 0; k < N_BINS; k++) {
+        mag[k] = scale * Math.sqrt(re[k]*re[k] + im[k]*im[k]);
+    }
+    return mag;
+}
+
+/* Build channel-selector buttons once. */
+function buildSpecChButtons() {
+    const cont = $('#spec-ch-buttons');
+    cont.innerHTML = '';
+    for(let ch = 0; ch < 8; ch++) {
+        const btn = document.createElement('button');
+        btn.textContent = 'ch' + ch;
+        btn.style.cssText = 'border: 1px solid var(--border); background: ' +
+            (ch === specChannel ? 'var(--accent)' : 'var(--bg-card)') +
+            '; color: ' + (ch === specChannel ? 'white' : 'var(--fg)') +
+            '; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-family: monospace;';
+        btn.addEventListener('click', () => {
+            specChannel = ch;
+            buildSpecChButtons();
+            renderSpec();
+        });
+        cont.appendChild(btn);
+    }
+}
+buildSpecChButtons();
+
+/* Process incoming wave frame — push a new FFT row per channel into
+ * the history buffers. Called from applyWaves. */
+const specFilteredHist = Array.from({length: 8}, () => []);
+function pushSpecFrames(d) {
+    if(!d.raw_full) return;
+    for(let ch = 0; ch < 8; ch++) {
+        const samples = d.raw_full[ch];
+        if(!samples || samples.length !== N_FFT) continue;
+        const mag = computeFFT(samples);
+        if(!mag) continue;
+        specHistory[ch][specHistoryHead[ch]].set(mag);
+        specHistoryHead[ch] = (specHistoryHead[ch] + 1) % WATERFALL_ROWS;
+        if(specHistoryFilled[ch] < WATERFALL_ROWS) specHistoryFilled[ch]++;
+    }
+    /* Build filtered spectrum from REAL post-DSP samples (d.filtered).
+     * These are at 200 Hz (downsampled by cpcu_dsp.py), so Nyquist = 100 Hz.
+     * The filtered spectrum shows 0-100 Hz — you can directly see the
+     * 50 Hz notch rejection compared to the raw spectrum. */
+    if(d.filtered && d.filtered.length > 0 && d.filtered[0] && d.filtered[0].length > 5) {
+        for(let _ch = 0; _ch < 8; _ch++) {
+            const fSamples = d.filtered[_ch];
+            if(!fSamples || fSamples.length < 10) continue;
+
+            /* Scale floats to integer-like range for FFT numerical stability */
+            const scale = 10000;
+            const padded = new Array(N_FFT).fill(0);
+            for(let i = 0; i < Math.min(fSamples.length, N_FFT); i++)
+                padded[i] = fSamples[i] * scale;
+
+            const mag = computeFFT(padded);
+            if(!mag) continue;
+
+            const mx = Math.max(...mag, 0.001);
+            specFilteredHist[_ch].unshift(mag.map(v => v / mx));
+            if(specFilteredHist[_ch].length > WATERFALL_ROWS)
+                specFilteredHist[_ch].pop();
+        }
+    }
+    if($('#panel-spectrum').classList.contains('active')) {
+        renderSpec();
+        renderFilteredSpec();
+        renderFilteredWater();
+    }
+}
+
+const specStaticCanvas = $('#spec-static-canvas');
+const specWaterCanvas = $('#spec-water-canvas');
+
+/* Viridis-ish colormap (low → high) for the waterfall. */
+function viridisColor(t) {
+    t = Math.max(0, Math.min(1, t));
+    const stops = [
+        [68,1,84],   [72,40,120],  [62,73,137],  [49,104,142],
+        [38,130,142],[31,158,137], [53,183,121], [109,205,89],
+        [180,222,44],[253,231,37]
+    ];
+    const x = t * (stops.length - 1);
+    const i = Math.floor(x), f = x - i;
+    const a = stops[i], b = stops[Math.min(i+1, stops.length-1)];
+    return [
+        Math.round(a[0] + (b[0]-a[0])*f),
+        Math.round(a[1] + (b[1]-a[1])*f),
+        Math.round(a[2] + (b[2]-a[2])*f)
+    ];
+}
+
+function renderSpec() {
+    const ch = specChannel;
+    const head = specHistoryHead[ch];
+    const filled = specHistoryFilled[ch];
+    if(filled === 0) return;
+
+    /* ----- static plot ----- */
+    {
+        const dpr = window.devicePixelRatio || 1;
+        const r = specStaticCanvas.getBoundingClientRect();
+        specStaticCanvas.width  = Math.floor(r.width * dpr);
+        specStaticCanvas.height = Math.floor(r.height * dpr);
+        const ctx = specStaticCanvas.getContext('2d');
+        ctx.setTransform(dpr,0,0,dpr,0,0);
+        const W = r.width, H = r.height;
+        const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
+        ctx.fillStyle = isDark ? '#1a1a1a' : '#ffffff';
+        ctx.fillRect(0,0,W,H);
+
+        const padL = 36, padR = 8, padT = 8, padB = 22;
+        const plotW = W - padL - padR;
+        const plotH = H - padT - padB;
+        const latest = specHistory[ch][(head - 1 + WATERFALL_ROWS) % WATERFALL_ROWS];
+
+        /* Find peak for normalization (excluding DC bin 0) */
+        let peak = 1e-6;
+        for(let i = 1; i < N_BINS; i++) if(latest[i] > peak) peak = latest[i];
+
+        /* Grid */
+        ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)';
+        ctx.lineWidth = 0.5;
+        for(let i = 0; i <= 4; i++) {
+            const y = padT + (plotH * i / 4);
+            ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+        }
+        /* Frequency ticks at 0/100/200/300/500/1000 Hz */
+        ctx.fillStyle = isDark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)';
+        ctx.font = '10px monospace';
+        const maxHz = FS_HZ / 2;       /* Nyquist */
+        [0, 100, 200, 500, 1000].forEach(hz => {
+            if(hz > maxHz) return;
+            const x = padL + (hz / maxHz) * plotW;
+            ctx.fillText(hz, x - 8, H - 6);
+            ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
+            ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+        });
+        /* 50 Hz reference (mains hum marker) */
+        const x50 = padL + (50 / maxHz) * plotW;
+        ctx.strokeStyle = isDark ? 'rgba(250,199,117,0.5)' : 'rgba(186,117,23,0.5)';
+        ctx.beginPath(); ctx.moveTo(x50, padT); ctx.lineTo(x50, padT + plotH); ctx.stroke();
+        ctx.fillStyle = isDark ? 'rgba(250,199,117,0.7)' : 'rgba(186,117,23,0.7)';
+        ctx.fillText('50Hz', x50 + 2, padT + 12);
+        /* Hz axis label */
+        ctx.fillStyle = isDark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)';
+        ctx.fillText('Hz', W - 18, H - 6);
+
+        /* Trace */
+        ctx.strokeStyle = isDark ? '#7BB6F0' : '#185FA5';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for(let i = 0; i < N_BINS; i++) {
+            const x = padL + (i / (N_BINS - 1)) * plotW;
+            const y = padT + plotH - (latest[i] / peak) * plotH;
+            if(i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+    }
+
+    /* ----- waterfall ----- */
+    {
+        const dpr = window.devicePixelRatio || 1;
+        const r = specWaterCanvas.getBoundingClientRect();
+        specWaterCanvas.width  = Math.floor(r.width * dpr);
+        specWaterCanvas.height = Math.floor(r.height * dpr);
+        const ctx = specWaterCanvas.getContext('2d');
+        ctx.setTransform(dpr,0,0,dpr,0,0);
+        const W = r.width, H = r.height;
+        const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
+        ctx.fillStyle = isDark ? '#1a1a1a' : '#ffffff';
+        ctx.fillRect(0,0,W,H);
+
+        const padL = 36, padR = 8, padT = 8, padB = 22;
+        const plotW = W - padL - padR;
+        const plotH = H - padT - padB;
+
+        const nRows = filled;
+        const rowH = plotH / nRows;
+        const colW = plotW / N_BINS;
+
+        /* Find global peak across the entire history (excluding DC) for
+         * normalization. Re-compute each frame — cheap at N_BINS×nRows. */
+        let peak = 1e-6;
+        for(let r = 0; r < nRows; r++) {
+            const row = specHistory[ch][r];
+            for(let i = 1; i < N_BINS; i++) if(row[i] > peak) peak = row[i];
+        }
+
+        /* Newest row at top. Iterate rows from newest backwards. */
+        const img = ctx.createImageData(Math.max(1, Math.floor(plotW)),
+                                         Math.max(1, Math.floor(plotH)));
+        const stride = img.width * 4;
+
+        for(let r = 0; r < nRows; r++) {
+            const histIdx = (head - 1 - r + WATERFALL_ROWS) % WATERFALL_ROWS;
+            const row = specHistory[ch][histIdx];
+            const yPx = Math.floor(r * rowH);
+            const yPxEnd = Math.min(img.height, Math.floor((r+1) * rowH));
+            for(let x = 0; x < img.width; x++) {
+                const binIdx = Math.floor((x / img.width) * N_BINS);
+                const v = row[binIdx] / peak;
+                const c = viridisColor(v);
+                for(let yy = yPx; yy < yPxEnd; yy++) {
+                    const off = (yy * img.width + x) * 4;
+                    img.data[off    ] = c[0];
+                    img.data[off + 1] = c[1];
+                    img.data[off + 2] = c[2];
+                    img.data[off + 3] = 255;
+                }
+            }
+        }
+        ctx.putImageData(img, padL, padT);
+
+        /* Frequency ticks */
+        ctx.fillStyle = isDark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)';
+        ctx.font = '10px monospace';
+        const maxHz = FS_HZ / 2;
+        [0, 100, 200, 500, 1000].forEach(hz => {
+            if(hz > maxHz) return;
+            const x = padL + (hz / maxHz) * plotW;
+            ctx.fillText(hz, x - 8, H - 6);
+        });
+        /* 50 Hz column overlay */
+        const x50 = padL + (50 / maxHz) * plotW;
+        ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+        ctx.lineWidth = 0.5;
+        ctx.beginPath(); ctx.moveTo(x50, padT); ctx.lineTo(x50, padT + plotH); ctx.stroke();
+
+        /* Time labels */
+        ctx.fillText('now',   4, padT + 8);
+        ctx.fillText('-30s',  4, padT + plotH - 2);
+    }
+}
+
+window.addEventListener('resize', () => {
+    if($('#panel-spectrum').classList.contains('active')) { renderSpec(); renderFilteredSpec(); renderFilteredWater(); }
+});
+
+/* ============================================================
+ * Filtered spectrum (20-450 Hz bandpass view)
+ * ============================================================ */
+
+
+function renderFilteredSpec() {
+    const can = document.getElementById('spec-filtered-canvas');
+    if(!can || !can.offsetParent) return;
+    const dpr = devicePixelRatio || 1;
+    const r = can.parentElement.getBoundingClientRect();
+    const W = r.width, H = r.height;
+    can.width = W * dpr; can.height = H * dpr;
+    can.style.width = W + 'px'; can.style.height = H + 'px';
+    const ctx = can.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+
+    const ch = specCh;
+    const hist = specFilteredHist[ch];
+    if(!hist || !hist.length) {
+        ctx.fillStyle = matchMedia("(prefers-color-scheme: dark)").matches ? "#888" : "#666";
+        ctx.font = "13px sans-serif";
+        ctx.fillText("Waiting for DSP filtered data...", 20, H/2);
+        return;
+    }
+    const latest = hist[0];  /* most recent FFT row */
+    if(!latest || !latest.length) return;
+
+    /* Filtered data is at 200 Hz (Nyquist = 100 Hz), not 2 kHz */
+    const FILT_FS = 200;
+    const binHz = FILT_FS / N_FFT;
+    const mags = Array.from(latest);
+
+    const padL = 48, padR = 16, padB = 32, padT = 8;
+    const pW = W - padL - padR, pH = H - padT - padB;
+    const maxM = Math.max(...mags, 1);
+    const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
+
+    /* Bandpass highlight region */
+    /* Full range is valid (already bandpassed by DSP) */
+    const x20 = padL;
+    const x450 = padL + pW;
+    ctx.fillStyle = isDark ? 'rgba(15,110,86,0.08)' : 'rgba(15,110,86,0.05)';
+    ctx.fillRect(x20, padT, x450 - x20, pH);
+
+    /* Grid */
+    ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)';
+    ctx.fillStyle = isDark ? '#888' : '#666';
+    ctx.font = '11px monospace';
+    [10, 20, 30, 50, 70, 100].forEach(f => {
+        const x = padL + (f / (FILT_FS / 2)) * pW;
+        ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + pH); ctx.stroke();
+        ctx.fillText(f + '', x - 8, H - 8);
+    });
+    ctx.fillText('0', padL - 4, H - 8);
+    ctx.fillText('Hz', W - 24, H - 8);
+
+    /* Bandpass boundary dashed lines */
+    ctx.strokeStyle = '#0F6E56'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+    /* Mark 50 Hz notch position instead of bandpass edges */
+    [50].forEach(f => {
+        const x = padL + (f / (FILT_FS / 2)) * pW;
+        ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + pH); ctx.stroke();
+    });
+    ctx.setLineDash([]);
+
+    /* Spectrum line */
+    ctx.strokeStyle = '#0F6E56'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for(let i = 0; i < mags.length; i++) {
+        const x = padL + (i / mags.length) * pW;
+        /* Only show up to Nyquist (100 Hz) */
+        if(i * binHz > FILT_FS / 2) break;
+        const y = padT + pH - (mags[i] / maxM) * pH;
+        if(i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    /* 50 Hz marker */
+    const bin50 = Math.round(50 / binHz);
+    if(bin50 < mags.length) {
+        const x50 = padL + (bin50 / mags.length) * pW;
+        const y50 = padT + pH - (mags[bin50] / maxM) * pH;
+        ctx.fillStyle = '#ea580c'; ctx.font = '10px sans-serif';
+        ctx.fillText('50Hz', x50 + 3, y50 - 5);
+    }
+}
+
+function renderFilteredWater() {
+    const can = document.getElementById('spec-filtered-water-canvas');
+    if(!can || !can.offsetParent) return;
+    const dpr = devicePixelRatio || 1;
+    const r = can.parentElement.getBoundingClientRect();
+    const W = r.width, H = r.height;
+    can.width = W * dpr; can.height = H * dpr;
+    can.style.width = W + 'px'; can.style.height = H + 'px';
+    const ctx = can.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+
+    const ch = specCh;
+    const hist = specFilteredHist[ch];
+    if(!hist.length) return;
+
+    const padL = 40, padR = 16, padT = 20, padB = 32;
+    const pW = W - padL - padR, pH = H - padT - padB;
+    const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
+    const rowH = Math.max(pH / hist.length, 1);
+
+    for(let row = 0; row < hist.length; row++) {
+        const bins = hist[row];
+        if(!bins) continue;
+        const binW = pW / bins.length;
+        for(let b = 0; b < bins.length; b++) {
+            const v = Math.min(bins[b] * 3, 1);
+            if(v < 0.01) continue;
+            const hue = 260 - v * 200;
+            ctx.fillStyle = 'hsl(' + hue + ',80%,' + (20 + v * 50) + '%)';
+            ctx.fillRect(padL + b * binW, padT + row * rowH, Math.ceil(binW), Math.ceil(rowH));
+        }
+    }
+
+    /* Labels */
+    ctx.fillStyle = isDark ? '#888' : '#666'; ctx.font = '11px monospace';
+    ctx.fillText('now', 4, padT + 8);
+    ctx.fillText('-30s', 4, padT + pH - 2);
+    [20, 50, 100].forEach(f => {
+        ctx.fillText(f + '', padL + (f / 100) * pW - 8, H - 8);
+    });
+    ctx.fillText('0', padL - 4, H - 8);
+
+    /* 50 Hz line */
+    const x50 = padL + (50 / 100) * pW;  /* 50 Hz at Fs/2=100Hz */
+    ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(x50, padT); ctx.lineTo(x50, padT + pH); ctx.stroke();
+}
+
+/* filtered spectrum hook moved into pushSpecFrames directly */
+
+/* ============================================================
+ * Tools tab — render IPC_ToolPresence slots (v2.4.1)
+ * ============================================================ */
+
+function renderTools(d) {
+    const list = $('#tools-list');
+    if(!d.tools || d.tools.length === 0) {
+        list.innerHTML = '<div style="color: var(--fg-muted); font-style: italic; padding: 20px; text-align: center;">no tools running</div>';
+        return;
+    }
+    list.innerHTML = '';
+    d.tools.forEach(t => {
+        const card = document.createElement('div');
+        card.style.cssText = 'border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 8px; background: var(--bg);';
+        const stale = !t.fresh;
+        const dot = `<span class="dot" style="background: ${stale ? 'var(--bad)' : 'var(--good)'}; display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px;"></span>`;
+        let html = `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <strong>${dot}${t.name}</strong>
+            <span style="font-family: monospace; font-size: 12px; color: var(--fg-muted);">slot ${t.slot} · last hb ${(t.heartbeat_age_us / 1000).toFixed(0)} ms ago</span>
+        </div>`;
+        if(t.state) {
+            html += '<dl class="kv" style="margin: 0;">';
+            for(const [k, v] of Object.entries(t.state)) {
+                let disp = v;
+                if(typeof v === 'number') {
+                    disp = Number.isInteger(v) ? v.toString() : v.toFixed(4);
+                } else if(typeof v === 'boolean') {
+                    disp = v ? 'yes' : 'no';
+                }
+                html += `<dt>${k}</dt><dd>${disp}</dd>`;
+            }
+            html += '</dl>';
+        }
+        if(stale) {
+            html += `<div style="margin-top: 8px; font-size: 12px; color: var(--bad);">heartbeat stale (>2 s) — tool may be hung or exited without cleanup</div>`;
+        }
+        card.innerHTML = html;
+        list.appendChild(card);
+    });
+}
+
+
+/* ============================================================
+ * WebSocket lifecycle with auto-reconnect
+ * ============================================================ */
+function connect() {
+    setPill('connecting', 'connecting...');
+    ws = new WebSocket(wsURL);
+
+    ws.onopen = () => {
+        setPill('connected', 'connected');
+        reconnectMs = 250;     // reset backoff
+    };
+
+    ws.onmessage = (e) => {
+        let msg;
+        try { msg = JSON.parse(e.data); }
+        catch (_) { return; }
+
+        if(msg.ch === 'state')      applyState(msg);
+        else if(msg.ch === 'waves') applyWaves(msg);
+        else if(msg.ch === 'hello') {
+            console.log('hello from bridge:', msg);
+        }
+    };
+
+    ws.onclose = () => {
+        setPill('disconnected', 'disconnected — retrying');
+        setTimeout(connect, reconnectMs);
+        reconnectMs = Math.min(reconnectMs * 2, 5000);
+    };
+    ws.onerror = () => {
+        // onclose will fire after this; let it handle the reconnect.
+    };
+}
+
+connect();
+
+</script>
+</body>
+</html>

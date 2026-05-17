@@ -275,6 +275,15 @@ if(TARGET cpcu_ws)
     install(TARGETS cpcu_ws RUNTIME DESTINATION /opt/cpcu/bin)
 endif()
 
+## Config -> /opt/cpcu/config.json  (v3.0: runtime.json installed as config.json)
+install(FILES config/runtime.json
+    DESTINATION /opt/cpcu
+    RENAME config.json)
+
+## Gestures -> /opt/cpcu/config/gestures.json  (v3.0: single source of truth)
+install(FILES config/gestures.json
+    DESTINATION /opt/cpcu/config)
+
 ## Python helpers -> /opt/cpcu/python   (v2.7: renamed from scripts/)
 install(FILES
     python/cpcu_dsp.py
