@@ -336,231 +336,53 @@ def test_constants():
 # ══════════════════════════════════════════════════════════════════════
 
 def test_runtime_config_loader_defaults():
-    """When runtime.json is absent everywhere, loader returns defaults
-    without crashing."""
-    print("\n--- TB-DSP11: runtime config loader (defaults) ---")
+    """v3: load_gestures returns defaults when gestures.json missing."""
+    print("\n--- TB-DSP11: config loader (defaults) ---")
     import cpcu_dsp
-    floor, ceil_, votes, beh, _ = cpcu_dsp.load_dsp_runtime_config(
-        ["rest", "biceps_flex"], path="/tmp/this_does_not_exist_xyzzy.json")
-    ASSERT(floor == cpcu_dsp.INTERP_CONF_FLOOR,
-           f"floor defaulted to {floor} (expected {cpcu_dsp.INTERP_CONF_FLOOR})")
-    ASSERT(ceil_ == cpcu_dsp.INTERP_CONF_CEIL,
-           f"ceil defaulted to {ceil_}")
-    ASSERT(votes == cpcu_dsp.CONFIRMATION_THRESHOLD,
-           f"votes defaulted to {votes}")
-    ASSERT("rest" in beh and beh["rest"]["mode"] == "freeze",
-           "rest is freeze by default")
-    ASSERT("biceps_flex" in beh and beh["biceps_flex"]["mode"] == "freeze",
-           "unknown class defaults to freeze")
+    gestures, channels, conf, hyst = cpcu_dsp.load_gestures("/tmp/nonexistent.json")
+    ASSERT("rest" in gestures, "default has rest gesture")
+    ASSERT(gestures["rest"]["mode"] == "freeze", "rest defaults to freeze")
+    ASSERT(len(channels) > 0, f"default channels: {channels}")
+    ASSERT(conf["curve"] == "quadratic", f"default curve: {conf['curve']}")
+    ASSERT(hyst["rest_to_active"] > 0, f"default hysteresis: {hyst}")
 
 
-def test_runtime_config_loader_velocity():
-    """When runtime.json specifies gesture_velocity, it's parsed correctly."""
-    print("\n--- TB-DSP12: runtime config loader (velocity) ---")
-    import cpcu_dsp, tempfile, os
-    sample = """
-    {
-      "schema_version": 1,
-      "servo_min_us": [498, 1074, 1074, 1001, 1001, 976],
-      "servo_max_us": [2500, 1953, 1953, 2002, 2002, 1733],
-      "interp_conf_floor_pct": 25,
-      "interp_conf_ceil_pct":  90,
-      "hysteresis_votes": 4,
-      "gesture_velocity": {
-          "biceps_flex": [0, 250, 0, 0, 0, 0],
-          "hand_flex":   [-100, 0, 0, 100, 100, 100]
-      }
-    }
-    """
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        f.write(sample); path = f.name
-    try:
-        floor, ceil_, votes, beh, _ = cpcu_dsp.load_dsp_runtime_config(
-            ["rest", "biceps_flex", "hand_flex"], path=path)
-        ASSERT(abs(floor - 0.25) < 1e-9, f"floor parsed as {floor}")
-        ASSERT(abs(ceil_ - 0.90) < 1e-9, f"ceil parsed as {ceil_}")
-        ASSERT(votes == 4, f"votes parsed as {votes}")
-        ASSERT(beh["biceps_flex"]["mode"] == "velocity", "biceps_flex velocity")
-        ASSERT(beh["biceps_flex"]["rate"][1] == 250, "biceps rate[1]")
-        ASSERT(beh["hand_flex"]["mode"] == "velocity", "hand_flex velocity")
-        ASSERT(beh["hand_flex"]["rate"][0] == -100, "negative rate parsed")
-    finally:
-        os.unlink(path)
+def test_runtime_loader():
+    """v3: load_runtime returns defaults when runtime.json missing."""
+    print("\n--- TB-DSP12: runtime loader (defaults) ---")
+    import cpcu_dsp
+    _, grip = cpcu_dsp.load_runtime("/tmp/nonexistent.json")
+    ASSERT(800 <= grip <= 2000, f"default grip_firm={grip} in valid range")
 
 
-def test_runtime_config_loader_clamping():
-    """Out-of-range rates get clamped, not silently accepted or rejected."""
-    print("\n--- TB-DSP13: runtime config loader (clamping) ---")
-    import cpcu_dsp, tempfile, os
-    sample = """
-    {
-      "schema_version": 1,
-      "servo_min_us": [498, 1074, 1074, 1001, 1001, 976],
-      "servo_max_us": [2500, 1953, 1953, 2002, 2002, 1733],
-      "gesture_velocity": {
-          "biceps_flex": [99999, -99999, 0, 0, 0, 0]
-      }
-    }
-    """
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        f.write(sample); path = f.name
-    try:
-        _, _, _, beh, _ = cpcu_dsp.load_dsp_runtime_config(
-            ["rest", "biceps_flex"], path=path)
-        ASSERT(beh["biceps_flex"]["rate"][0] == 5000,
-               f"99999 clamped to 5000, got {beh['biceps_flex']['rate'][0]}")
-        ASSERT(beh["biceps_flex"]["rate"][1] == -5000,
-               f"-99999 clamped to -5000, got {beh['biceps_flex']['rate'][1]}")
-    finally:
-        os.unlink(path)
+def test_gestures_json_valid():
+    """v3: actual gestures.json loads without error."""
+    print("\n--- TB-DSP13: gestures.json loads ---")
+    import cpcu_dsp, os
+    gs_path = os.path.join(os.path.dirname(__file__), "..", "config", "gestures.json")
+    gestures, channels, conf, hyst = cpcu_dsp.load_gestures(gs_path)
+    ASSERT(len(gestures) >= 2, f"has {len(gestures)} gestures")
+    ASSERT("rest" in gestures, "has rest")
+    ASSERT(len(channels) >= 1, f"has {len(channels)} EMG channels")
+    for gname, gdef in gestures.items():
+        ASSERT("mode" in gdef, f"{gname} has mode")
+        ASSERT("_rates" in gdef, f"{gname} has resolved _rates")
+    ASSERT(conf["floor_pct"] < conf["ceil_pct"], "floor < ceil")
+    ASSERT(hyst["active_to_active"] >= hyst["active_to_rest"],
+           "active→active votes >= active→rest")
 
 
-def test_runtime_config_loader_unknown_class():
-    """gesture_velocity entries for classes not in model.classes_ are
-    ignored without raising."""
-    print("\n--- TB-DSP14: runtime config loader (unknown class) ---")
-    import cpcu_dsp, tempfile, os
-    sample = """
-    {
-      "schema_version": 1,
-      "servo_min_us": [498, 1074, 1074, 1001, 1001, 976],
-      "servo_max_us": [2500, 1953, 1953, 2002, 2002, 1733],
-      "gesture_velocity": {
-          "biceps_flex":         [0, 200, 0, 0, 0, 0],
-          "this_class_doesnt_exist": [0, 100, 0, 0, 0, 0]
-      }
-    }
-    """
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        f.write(sample); path = f.name
-    try:
-        _, _, _, beh, _ = cpcu_dsp.load_dsp_runtime_config(
-            ["rest", "biceps_flex"], path=path)
-        ASSERT("biceps_flex" in beh and beh["biceps_flex"]["mode"] == "velocity",
-               "known class loaded")
-        ASSERT("this_class_doesnt_exist" not in beh,
-               "unknown class silently dropped")
-    finally:
-        os.unlink(path)
+def test_confidence_scale():
+    """v3: confidence_scale quadratic curve."""
+    print("\n--- TB-DSP14: confidence curve ---")
+    from cpcu_dsp import confidence_scale
+    ASSERT(confidence_scale(0.0, 0.4, 0.85, "quadratic") == 0.0, "below floor = 0")
+    ASSERT(confidence_scale(1.0, 0.4, 0.85, "quadratic") == 1.0, "above ceil = 1")
+    mid = confidence_scale(0.625, 0.4, 0.85, "quadratic")  # midpoint
+    ASSERT(0.2 < mid < 0.3, f"midpoint = {mid:.3f} (quadratic < linear 0.5)")
+    lin = confidence_scale(0.625, 0.4, 0.85, "linear")
+    ASSERT(0.45 < lin < 0.55, f"linear midpoint = {lin:.3f}")
 
-
-def test_runtime_config_loader_invariant_violation():
-    """floor >= ceil triggers a fallback to defaults rather than a
-    division-by-zero in the integrator."""
-    print("\n--- TB-DSP15: runtime config (invariant violation) ---")
-    import cpcu_dsp, tempfile, os
-    sample = """
-    {
-      "schema_version": 1,
-      "servo_min_us": [498, 1074, 1074, 1001, 1001, 976],
-      "servo_max_us": [2500, 1953, 1953, 2002, 2002, 1733],
-      "interp_conf_floor_pct": 80,
-      "interp_conf_ceil_pct":  50
-    }
-    """
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        f.write(sample); path = f.name
-    try:
-        floor, ceil_, _, _, _ = cpcu_dsp.load_dsp_runtime_config(["rest"], path=path)
-        ASSERT(floor < ceil_,
-               f"loader rejected invariant violation: floor={floor} ceil={ceil_}")
-    finally:
-        os.unlink(path)
-
-
-def test_runtime_config_jsonc_comments():
-    """// line comments and trailing commas (JSONC) are tolerated."""
-    print("\n--- TB-DSP16: runtime config (JSONC tolerance) ---")
-    import cpcu_dsp, tempfile, os
-    sample = """
-    {
-      // schema and limits
-      "schema_version": 1,
-      "servo_min_us": [498, 1074, 1074, 1001, 1001, 976], // mech min
-      "servo_max_us": [2500, 1953, 1953, 2002, 2002, 1733],
-      // hysteresis_votes left at default
-      "gesture_velocity": {
-          "biceps_flex": [0, 200, 0, 0, 0, 0],   // close elbow
-      },
-    }
-    """
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        f.write(sample); path = f.name
-    try:
-        _, _, _, beh, _ = cpcu_dsp.load_dsp_runtime_config(
-            ["rest", "biceps_flex"], path=path)
-        ASSERT(beh.get("biceps_flex", {}).get("mode") == "velocity",
-               "JSONC parsed and velocity row applied")
-    finally:
-        os.unlink(path)
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  TB-DSP17 — Soft-grip clamp
-# ══════════════════════════════════════════════════════════════════════
-
-def test_grip_firm_us_loaded():
-    """grip_firm_us is parsed from runtime.json into the loader's
-    5th return value, defaulting to 1100 when absent or invalid."""
-    print("\n--- TB-DSP17: grip_firm_us loader ---")
-    import cpcu_dsp, tempfile, os
-
-    # Default when absent
-    sample_default = """
-    {
-      "schema_version": 1,
-      "servo_min_us": [498, 1074, 1074, 1001, 1001, 976],
-      "servo_max_us": [2500, 1953, 1953, 2002, 2002, 1733]
-    }
-    """
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        f.write(sample_default); path = f.name
-    try:
-        _, _, _, _, gf = cpcu_dsp.load_dsp_runtime_config(["rest"], path=path)
-        ASSERT(gf == cpcu_dsp.GRIP_FIRM_US_DEFAULT,
-               f"absent grip_firm_us defaults to {gf}")
-    finally:
-        os.unlink(path)
-
-    # Honored when present
-    sample_present = """
-    {
-      "schema_version": 1,
-      "servo_min_us": [498, 1074, 1074, 1001, 1001, 976],
-      "servo_max_us": [2500, 1953, 1953, 2002, 2002, 1733],
-      "grip_firm_us": 1150
-    }
-    """
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        f.write(sample_present); path = f.name
-    try:
-        _, _, _, _, gf = cpcu_dsp.load_dsp_runtime_config(["rest"], path=path)
-        ASSERT(gf == 1150, f"present grip_firm_us parsed as {gf}")
-    finally:
-        os.unlink(path)
-
-    # Out of range falls back to default
-    sample_bad = """
-    {
-      "schema_version": 1,
-      "servo_min_us": [498, 1074, 1074, 1001, 1001, 976],
-      "servo_max_us": [2500, 1953, 1953, 2002, 2002, 1733],
-      "grip_firm_us": 99999
-    }
-    """
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        f.write(sample_bad); path = f.name
-    try:
-        _, _, _, _, gf = cpcu_dsp.load_dsp_runtime_config(["rest"], path=path)
-        ASSERT(gf == cpcu_dsp.GRIP_FIRM_US_DEFAULT,
-               f"out-of-range grip_firm_us rejected, got {gf}")
-    finally:
-        os.unlink(path)
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  Driver
-# ══════════════════════════════════════════════════════════════════════
 
 def main():
     print("=" * 60)
@@ -578,12 +400,9 @@ def main():
     test_gesture_servo_map()
     test_constants()
     test_runtime_config_loader_defaults()
-    test_runtime_config_loader_velocity()
-    test_runtime_config_loader_clamping()
-    test_runtime_config_loader_unknown_class()
-    test_runtime_config_loader_invariant_violation()
-    test_runtime_config_jsonc_comments()
-    test_grip_firm_us_loaded()
+    test_runtime_loader()
+    test_gestures_json_valid()
+    test_confidence_scale()
 
     print("\n" + "=" * 60)
     print(f"  RESULTS: {g_pass} PASS, {g_fail} FAIL")
