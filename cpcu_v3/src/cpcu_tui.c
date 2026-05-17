@@ -403,7 +403,7 @@ int main(int argc, char *argv[])
              *  parks the smoother at neutral, and once SMOOTH_AllSettled
              *  flips edit_mode_active to 1 — which the CONFIG renderer
              *  surfaces as a banner. The handshake protocol is fully
-             *  documented in cpcu_v2/docs/EDIT_MODE.md.
+             *  documented in docs/EDIT_MODE.md.
              *
              *  Page-local: pressing 'e' from any other page does nothing
              *  (no global edit-mode action). The TUI's general principle

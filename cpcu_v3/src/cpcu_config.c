@@ -24,7 +24,7 @@
  *  These mirror the values in cpcu_pca9685.h, cpcu_smooth.h, and the
  *  draft GESTURE_BEHAVIOR map for future. If runtime.json is absent on
  *  a fresh install, the kernel refuses to start and points the user at
- *  cpcu_v2/config/runtime.json.example. CFG_Defaults is for tests and
+ *  config/runtime.json.example. CFG_Defaults is for tests and
  *  configure.sh --reset only.
  */
 

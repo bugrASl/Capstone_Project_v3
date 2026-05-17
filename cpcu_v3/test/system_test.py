@@ -122,9 +122,9 @@ SUBSYSTEM_CHECKS = [
     {
         "id":       "SUB-IPC",
         "name":     "IPC version match",
-        "target":   "IPC_VERSION = 0x0206",
+        "target":   "IPC_VERSION = 0x0300",
         "metric":   "ipc_version",
-        "check":    lambda v: v == 0x0206,
+        "check":    lambda v: v == 0x0300,
         "unit":     "hex",
     },
     {

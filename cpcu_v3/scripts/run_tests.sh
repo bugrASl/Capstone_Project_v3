@@ -22,8 +22,8 @@
 ##  Phase 1 needs no hardware. Phase 2 needs shared memory. Phase 3 needs Pi hardware.
 ##
 ##  v2.7 changes:
-##      - Moved from cpcu_v2/run_tests.sh to cpcu_v2/scripts/run_tests.sh.
-##      - Auto-CDs to cpcu_v2/ at startup so the legacy ./binary and
+##      - Moved from run_tests.sh to scripts/run_tests.sh.
+##      - Auto-CDs to  at startup so the legacy ./binary and
 ##        build/binary path lookups still work.
 
 set -e
@@ -227,7 +227,7 @@ if echo "$PHASES" | grep -q "1"; then
     ## Find or build test_codec
     CODEC_BIN=""
     if false; then  # never use root-level binary (may be wrong arch)
-        CODEC_BIN="./test_codec"
+        CODEC_BIN="build/test_codec"
     elif [ -f build/test_codec ]; then
         CODEC_BIN="build/test_codec"
     else
@@ -238,7 +238,7 @@ if echo "$PHASES" | grep -q "1"; then
         else
             gcc -O2 -Iinclude -Iwire -Inrf -o test_codec \
                 test/test_codec.c wire/wireless_packet.c -lm
-            CODEC_BIN="./test_codec"
+            CODEC_BIN="build/test_codec"
         fi
     fi
 
@@ -247,7 +247,7 @@ if echo "$PHASES" | grep -q "1"; then
 
     ## Find or build safety_testbench
     SAF_BIN=""
-    if [ -f ./safety_testbench ]; then
+    if false; then
         SAF_BIN="./safety_testbench"
     elif [ -f build/safety_testbench ]; then
         SAF_BIN="build/safety_testbench"
@@ -268,7 +268,7 @@ if echo "$PHASES" | grep -q "1"; then
 
     ## Find or build smooth_testbench (v2.3.2 — deadband + motion unit tests)
     SMO_BIN=""
-    if [ -f ./smooth_testbench ]; then
+    if false; then
         SMO_BIN="./smooth_testbench"
     elif [ -f build/smooth_testbench ]; then
         SMO_BIN="build/smooth_testbench"
@@ -289,7 +289,7 @@ if echo "$PHASES" | grep -q "1"; then
 
     ## Find or build config_testbench (v2.3.3 — JSON loader unit tests)
     CFG_BIN=""
-    if [ -f ./config_testbench ]; then
+    if false; then
         CFG_BIN="./config_testbench"
     elif [ -f build/config_testbench ]; then
         CFG_BIN="build/config_testbench"
@@ -310,7 +310,7 @@ if echo "$PHASES" | grep -q "1"; then
 
     ## Find or build editor_testbench (v2.3.8 — TUI editor state machine)
     ED_BIN=""
-    if [ -f ./editor_testbench ]; then
+    if false; then
         ED_BIN="./editor_testbench"
     elif [ -f build/editor_testbench ]; then
         ED_BIN="build/editor_testbench"
@@ -331,7 +331,7 @@ if echo "$PHASES" | grep -q "1"; then
 
     ## Find or build json_testbench (v2.4.0 — JSON serializer for web bridge)
     JS_BIN=""
-    if [ -f ./json_testbench ]; then
+    if false; then
         JS_BIN="./json_testbench"
     elif [ -f build/json_testbench ]; then
         JS_BIN="build/json_testbench"

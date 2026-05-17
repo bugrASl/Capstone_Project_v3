@@ -505,7 +505,7 @@ joblib.dump({"model": model, "scaler": scaler}, "model_5ch.pkl")
 
 ```bash
 # copy model to Pi
-scp model_5ch.pkl pi@<ip>:cpcu_v2/models/
+scp model_5ch.pkl pi@<ip>:models/
 
 # set it as active
 ./launch.sh set-model models/model_5ch.pkl

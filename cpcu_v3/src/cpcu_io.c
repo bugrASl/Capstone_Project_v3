@@ -32,7 +32,7 @@
  *                    for each channel; zero values are skipped (mean
  *                    "use compile-time default"). The seq-compare
  *                    avoids redundant reapplies on the steady-state
- *                    50 Hz tick. See cpcu_v2/docs/SMOOTHER_TUNING.md.
+ *                    50 Hz tick. See docs/SMOOTHER_TUNING.md.
  *
  *              v2.3.4 changes:
  *                  - Edit-mode handshake responder. When the TUI sets
@@ -46,7 +46,7 @@
  *                    normal motor-cmd processing resumes. Safety FSM
  *                    has priority — any SAFE transition forces
  *                    edit_mode_active back to 0 unconditionally. Full
- *                    protocol in cpcu_v2/docs/EDIT_MODE.md.
+ *                    protocol in docs/EDIT_MODE.md.
  *
  *              v2.3.3 changes:
  *                  - Reads IPC_RuntimeConfig once per servo tick
@@ -60,7 +60,7 @@
  *                    SIGHUP-driven kernel reload. The bias-then-clamp
  *                    order means the runtime config can never escape
  *                    the compile-time safety envelope. See
- *                    cpcu_v2/docs/RUNTIME_CONFIG.md.
+ *                    docs/RUNTIME_CONFIG.md.
  *                  - SMOOTH_MarkWritten now records the BIASED pulse
  *                    width that actually went to the PCA, so the
  *                    deadband logic stays coherent against the true
@@ -85,7 +85,7 @@
  *                    the SAFE path marks all written; the AllOff path
  *                    clears ever_written so the first post-recovery
  *                    write always goes through.
- *                  - See cpcu_v2/docs/JITTER_MITIGATION.md.
+ *                  - See docs/JITTER_MITIGATION.md.
  *
  *              v2.3 changes:
  *                  - Now calls SAFETY_UpdateState() once per loop after the

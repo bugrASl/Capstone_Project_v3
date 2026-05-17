@@ -924,7 +924,7 @@ after the v2.7 restructure:
 **Fix:** `test_dsp_pipeline.py` now adds **both** `../python/` (v2.7) and
 `../scripts/` (v2.6 fallback) to `sys.path`.
 
-**Drop into:** `cpcu_v2/test/test_dsp_pipeline.py`
+**Drop into:** `test/test_dsp_pipeline.py`
 
 ## Issue 2: test_ipc_bridge.py — same problem
 
@@ -934,7 +934,7 @@ runs in Phase 2 (needs the kernel up), but it would have failed there.
 
 **Fix:** Same approach as Issue 1.
 
-**Drop into:** `cpcu_v2/test/test_ipc_bridge.py`
+**Drop into:** `test/test_ipc_bridge.py`
 
 ## Issue 3: TB-ED05g — editor testbench reads production config
 
@@ -957,7 +957,7 @@ to `/opt/cpcu/config.json.test_backup` for the duration of its run,
 restores it via `atexit`. The directory is owned by your user (per
 `./launch.sh setup`), so no sudo is needed.
 
-**Drop into:** `cpcu_v2/test/editor_testbench.c`
+**Drop into:** `test/editor_testbench.c`
 
 ## Issue 4: redundant PYTHONPATH setting
 

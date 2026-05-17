@@ -27,11 +27,11 @@
 #      3. Reminds the launcher to rebuild after every edit.
 #
 #    For runtime-tunable knobs (servo limits, gesture velocities, deadband,
-#    grip levels, per-servo bias) edit cpcu_v2/config/runtime.json directly,
+#    grip levels, per-servo bias) edit config/runtime.json directly,
 #    or use the CPCU TUI's edit mode.
 #
 #  v2.7 changes:
-#    - Moved from cpcu_v2/configure.sh to cpcu_v2/scripts/configure.sh.
+#    - Moved from cpcu_v2/configure.sh to scripts/configure.sh.
 #    - CPCU_ROOT path resolution climbs one directory (we live in
 #      scripts/ now, not at the repo root).
 #    - All "next steps" prose stripped — the launcher prints user-facing
@@ -49,10 +49,10 @@ CPCU_ROOT="$( cd "${SCRIPT_DIR}/.." && pwd )"
 REPO_ROOT="$( cd "${CPCU_ROOT}/.." && pwd )"
 BSAU_ROOT="${REPO_ROOT}/bsau_v2"
 
-# Sanity check: cpcu_v2/include/cpcu_safety.h must exist where we expect it.
+# Sanity check: include/cpcu_safety.h must exist where we expect it.
 if [ ! -f "${CPCU_ROOT}/include/cpcu_safety.h" ]; then
-    echo "[configure.sh] ERROR: can't locate cpcu_v2/include/cpcu_safety.h"
-    echo "                  expected layout: <repo>/cpcu_v2/scripts/configure.sh"
+    echo "[configure.sh] ERROR: can't locate include/cpcu_safety.h"
+    echo "                  expected layout: <repo>/scripts/configure.sh"
     exit 1
 fi
 
@@ -76,15 +76,15 @@ fi
 #------------------------------------------------------------------------------
 TUNABLES=(
     # CPCU safety thresholds
-    "radio-timeout|cpcu_v2/include/cpcu_safety.h|SAFETY_RADIO_TIMEOUT_MS|750|150|10000|Silence (ms) before RUNNING -> DEGRADED"
-    "radio-safe|cpcu_v2/include/cpcu_safety.h|SAFETY_RADIO_SAFE_MS|1500|500|30000|DEGRADED duration (ms) before SAFE"
-    "boot-grace|cpcu_v2/include/cpcu_safety.h|SAFETY_RADIO_BOOT_GRACE_MS|5000|1000|60000|Cold-start grace (ms) before radio fault arms"
-    "vbat-low|cpcu_v2/include/cpcu_safety.h|SAFETY_VBAT_LOW_V|3.0f|2.5|4.0|Battery LOW threshold (V), float (suffix f)"
-    "vbat-crit|cpcu_v2/include/cpcu_safety.h|SAFETY_VBAT_CRITICAL_V|2.7f|2.0|3.5|Battery CRITICAL threshold (V), float (suffix f)"
-    "thermal-warn|cpcu_v2/include/cpcu_safety.h|SAFETY_THERMAL_WARN_C|75|50|85|Thermal WARN (deg C)"
-    "thermal-crit|cpcu_v2/include/cpcu_safety.h|SAFETY_THERMAL_CRITICAL_C|82|60|90|Thermal CRITICAL (deg C)"
-    "i2c-max|cpcu_v2/include/cpcu_safety.h|SAFETY_I2C_MAX_ERRORS|5|1|100|Consecutive I2C failures before SAFE"
-    "ring-overflow|cpcu_v2/include/cpcu_safety.h|SAFETY_RING_OVERFLOW_LIMIT|100|10|10000|Ring overflows (delta) before fault"
+    "radio-timeout|include/cpcu_safety.h|SAFETY_RADIO_TIMEOUT_MS|750|150|10000|Silence (ms) before RUNNING -> DEGRADED"
+    "radio-safe|include/cpcu_safety.h|SAFETY_RADIO_SAFE_MS|1500|500|30000|DEGRADED duration (ms) before SAFE"
+    "boot-grace|include/cpcu_safety.h|SAFETY_RADIO_BOOT_GRACE_MS|5000|1000|60000|Cold-start grace (ms) before radio fault arms"
+    "vbat-low|include/cpcu_safety.h|SAFETY_VBAT_LOW_V|3.0f|2.5|4.0|Battery LOW threshold (V), float (suffix f)"
+    "vbat-crit|include/cpcu_safety.h|SAFETY_VBAT_CRITICAL_V|2.7f|2.0|3.5|Battery CRITICAL threshold (V), float (suffix f)"
+    "thermal-warn|include/cpcu_safety.h|SAFETY_THERMAL_WARN_C|75|50|85|Thermal WARN (deg C)"
+    "thermal-crit|include/cpcu_safety.h|SAFETY_THERMAL_CRITICAL_C|82|60|90|Thermal CRITICAL (deg C)"
+    "i2c-max|include/cpcu_safety.h|SAFETY_I2C_MAX_ERRORS|5|1|100|Consecutive I2C failures before SAFE"
+    "ring-overflow|include/cpcu_safety.h|SAFETY_RING_OVERFLOW_LIMIT|100|10|10000|Ring overflows (delta) before fault"
 
     # BSAU radio (channel only — BSAU_MODE selection is multi-line and
     # not amenable to simple #define editing; edit bsau_config.h by hand
@@ -105,7 +105,7 @@ USAGE
   ./configure.sh --show                show all current values
   ./configure.sh --diff                show values that differ from defaults
   ./configure.sh --reset               reset all to defaults
-  ./configure.sh --reset --runtime     also regenerate cpcu_v2/config/runtime.json
+  ./configure.sh --reset --runtime     also regenerate config/runtime.json
   ./configure.sh --<name>              show one current value
   ./configure.sh --<name> <value>      set one value
   ./configure.sh --<name1> <v1> --<name2> <v2> ...
@@ -120,9 +120,9 @@ NOTES
     re-run cmake/make for CPCU and re-flash for BSAU before changes take
     effect.
   - For RUNTIME-tunable knobs (servo limits, smoother params, gesture
-    velocities, etc.) edit cpcu_v2/config/runtime.json or use the CPCU TUI
+    velocities, etc.) edit config/runtime.json or use the CPCU TUI
     edit mode (v2.3.4+).
-  - See cpcu_v2/docs/RUNTIME_CONFIG.md for the full runtime/compile split.
+  - See docs/RUNTIME_CONFIG.md for the full runtime/compile split.
 EOF
 }
 
@@ -252,13 +252,13 @@ do_show_one() {
 do_show_all() {
     local scope="$1"
     echo -e "${B}=== Compile-time tunables ===${N}"
-    echo "(For runtime knobs see cpcu_v2/config/runtime.json + RUNTIME_CONFIG.md)"
+    echo "(For runtime knobs see config/runtime.json + RUNTIME_CONFIG.md)"
     echo
     for entry in "${TUNABLES[@]}"; do
         IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
         case "${scope}" in
             bsau) [[ "${file}" == bsau_v2/* ]] || continue ;;
-            cpcu) [[ "${file}" == cpcu_v2/* ]] || continue ;;
+            cpcu) [[ "${file}" == include/* ]] || continue ;;
         esac
         local val; val="$(read_value "${file}" "${define}")"
         local marker=""
@@ -344,7 +344,7 @@ do_interactive() {
         IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
         case "${scope}" in
             bsau) [[ "${file}" == bsau_v2/* ]] || continue ;;
-            cpcu) [[ "${file}" == cpcu_v2/* ]] || continue ;;
+            cpcu) [[ "${file}" == include/* ]] || continue ;;
         esac
         local val; val="$(read_value "${file}" "${define}")"
         echo -e "${B}${define}${N}  (${descr})"

@@ -34,7 +34,7 @@
 ##      *   error
 ##
 ##  v2.7 changes:
-##      - Moved from cpcu_v2/setup_pi.sh to cpcu_v2/scripts/setup_pi.sh.
+##      - Moved from setup_pi.sh to scripts/setup_pi.sh.
 ##      - REPO_RUNTIME path resolution climbs one directory up.
 ##      - Added /opt/cpcu/python/ to the directory list.
 ##      - Returns exit code 10 instead of printing reboot prompts.
@@ -49,7 +49,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
-echo "=== CPCU v2.7 Raspberry Pi Setup ==="
+echo "=== CPCU v3.0 Raspberry Pi Setup ==="
 echo "  Acting as: root  (real user: ${REAL_USER})"
 echo ""
 

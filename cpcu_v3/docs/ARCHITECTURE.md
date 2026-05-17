@@ -1132,7 +1132,7 @@ v2.3.3) or by directly editing the header and rebuilding.
 
 Three small additions:
 
-`cpcu_v2/include/cpcu_safety.h`:
+`include/cpcu_safety.h`:
 ```c
 #define SAFETY_RADIO_BOOT_GRACE_MS      5000
 ```
@@ -1142,18 +1142,18 @@ uint64_t        boot_us;
 bool            first_packet_seen;
 ```
 
-`cpcu_v2/src/cpcu_safety.c`, `SAFETY_Init`:
+`src/cpcu_safety.c`, `SAFETY_Init`:
 ```c
 ctx->boot_us = safety_now_us();
 /* memset above already cleared first_packet_seen */
 ```
 
-`cpcu_v2/src/cpcu_safety.c`, `SAFETY_FeedPacket`:
+`src/cpcu_safety.c`, `SAFETY_FeedPacket`:
 ```c
 ctx->first_packet_seen = true;     /* added at top */
 ```
 
-`cpcu_v2/src/cpcu_safety.c`, `SAFETY_CheckTimeout`:
+`src/cpcu_safety.c`, `SAFETY_CheckTimeout`:
 ```c
 if(!ctx->first_packet_seen &&
    (now_us - ctx->boot_us) / 1000 < SAFETY_RADIO_BOOT_GRACE_MS)
@@ -1228,7 +1228,7 @@ No, for two reasons:
 | TB-SAF09c | First packet during grace, then 800 ms silence | normal timeout fires (DEGRADED) |
 | TB-SAF09d | Post-warmup timeout (regression test) | unchanged 750 ms behaviour |
 
-Run from `cpcu_v2/`:
+Run from ``:
 ```bash
 build/safety_testbench
 # Expected: 38 PASS, 0 FAIL  (was 33 pre-v2.3.1)
@@ -1624,7 +1624,7 @@ sudo ./launch.sh release
 
 ```bash
 # Edit runtime.json with your initial guess at velocities:
-$EDITOR cpcu_v2/config/runtime.json
+$EDITOR config/runtime.json
 
 # Restart so dsp picks up new gesture map:
 sudo systemctl restart cpcu
@@ -1690,12 +1690,12 @@ velocity/accel limits are probably too low — try raising
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.3 — core
   allocation. dsp on Cores 1-2 owns the integrator; cpcu_io on
   Core 3 reads the published targets.
-- [`cpcu_v2/python/cpcu_dsp.py`](../python/cpcu_dsp.py) v2.3.5 —
+- [`python/cpcu_dsp.py`](../python/cpcu_dsp.py) v2.3.5 —
   `load_dsp_runtime_config()`, the velocity integrator block in
   `run_inference()`.
-- [`cpcu_v2/config/runtime.json`](../config/runtime.json) — the
+- [`config/runtime.json`](../config/runtime.json) — the
   config file with the example `gesture_velocity` block.
-- [`cpcu_v2/test/test_dsp_pipeline.py`](../test/test_dsp_pipeline.py) —
+- [`test/test_dsp_pipeline.py`](../test/test_dsp_pipeline.py) —
   TB-DSP11..TB-DSP16 cover the loader.
 
 
@@ -2056,14 +2056,14 @@ Don't ship like that. The watchdog protects hardware.
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) §3.3 — core
   allocation. dsp on Cores 1-2 owns soft-firm clamp; cpcu_io on
   Core 3 owns the watchdog.
-- [`cpcu_v2/python/cpcu_dsp.py`](../python/cpcu_dsp.py) v2.3.7 —
+- [`python/cpcu_dsp.py`](../python/cpcu_dsp.py) v2.3.7 —
   `GRIP_FIRM_US_DEFAULT`, the loader's 5th return value, and the
   one-sided clamp in the integrator.
-- [`cpcu_v2/src/cpcu_io.c`](../src/cpcu_io.c) v2.3.7 — the
+- [`src/cpcu_io.c`](../src/cpcu_io.c) v2.3.7 — the
   watchdog state machine.
-- [`cpcu_v2/include/cpcu_ipc.h`](../include/cpcu_ipc.h) — the
+- [`include/cpcu_ipc.h`](../include/cpcu_ipc.h) — the
   `io_gripper_stalls` counter in `IPC_Diagnostics`.
-- [`cpcu_v2/test/test_dsp_pipeline.py`](../test/test_dsp_pipeline.py) —
+- [`test/test_dsp_pipeline.py`](../test/test_dsp_pipeline.py) —
   TB-DSP17 covers the loader. io-side is hardware-tested.
 
 

@@ -568,18 +568,18 @@ run `./launch.sh set-model` to enable inference.
 
 | File | Purpose |
 |------|---------|
-| `cpcu_v2/src/cpcu_ws.c` | Bridge process: IPC mapping, broadcast loop, JSON builders, Mongoose handler. v2.4.1 added `raw_full` field for browser FFT and `tools` array reading `IPC_ToolPresence`. |
-| `cpcu_v2/include/cpcu_json.h` + `cpcu_v2/src/cpcu_json.c` | Hand-rolled JSON writer |
-| `cpcu_v2/web/static/index.html` | Single-page browser dashboard. v2.4.1 added Spectrum tab (FFT + waterfall) and Tools tab. |
-| `cpcu_v2/web/vendor/README.md` + `fetch.sh` + `mongoose_stub.h` | Mongoose vendoring |
-| `cpcu_v2/include/cpcu_ipc.h` | Region declarations (IPC_ToolPresence, IPC_DspFiltered); IPC_VERSION 0x0206 |
-| `cpcu_v2/src/cpcu_ipc.c` | New region pointers wired in `ipc_map_ptrs` |
-| `cpcu_v2/python/cpcu_dsp.py` | Per-window publish to `IPC_DspFiltered` |
-| `cpcu_v2/python/cpcu_ipc_bridge.py` | Region offsets + `write_dsp_filtered_window` method |
-| `cpcu_v2/scripts/launch.sh` | `ws` and `install-ws-service` modes |
-| `cpcu_v2/test/signal_testbench.c` | v2.4.1: publishes to `IPC_ToolPresence` slot 1 each loop iteration |
-| `cpcu_v2/test/json_testbench.c` | 7 unit tests for the JSON serializer |
-| `cpcu_v2/CMakeLists.txt` | `cpcu_ws` and `json_testbench` targets; mongoose presence detection |
+| `./src/cpcu_ws.c` | Bridge process: IPC mapping, broadcast loop, JSON builders, Mongoose handler. v2.4.1 added `raw_full` field for browser FFT and `tools` array reading `IPC_ToolPresence`. |
+| `./include/cpcu_json.h` + `./src/cpcu_json.c` | Hand-rolled JSON writer |
+| `./web/static/index.html` | Single-page browser dashboard. v2.4.1 added Spectrum tab (FFT + waterfall) and Tools tab. |
+| `./web/vendor/README.md` + `fetch.sh` + `mongoose_stub.h` | Mongoose vendoring |
+| `./include/cpcu_ipc.h` | Region declarations (IPC_ToolPresence, IPC_DspFiltered); IPC_VERSION 0x0206 |
+| `./src/cpcu_ipc.c` | New region pointers wired in `ipc_map_ptrs` |
+| `./python/cpcu_dsp.py` | Per-window publish to `IPC_DspFiltered` |
+| `./python/cpcu_ipc_bridge.py` | Region offsets + `write_dsp_filtered_window` method |
+| `./scripts/launch.sh` | `ws` and `install-ws-service` modes |
+| `./test/signal_testbench.c` | v2.4.1: publishes to `IPC_ToolPresence` slot 1 each loop iteration |
+| `./test/json_testbench.c` | 7 unit tests for the JSON serializer |
+| `./CMakeLists.txt` | `cpcu_ws` and `json_testbench` targets; mongoose presence detection |
 
 ---
 

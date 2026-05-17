@@ -1246,7 +1246,7 @@ show_menu() {
     cat <<'EOF'
 
   ┌──────────────────────────────────────────────────────────────────┐
-  │              CPCU v2.7 — Mode Selection (tmux)                   │
+  │              CPCU v3.0 — Mode Selection (tmux)                   │
   ├──────────────────────────────────────────────────────────────────┤
   │  1) kernel    Run kernel only  (foreground, no UI)               │
   │  2) tui       tmux: [KERNEL][SHELL][TUI]    — main dashboard     │
@@ -1835,7 +1835,7 @@ EOF
     esac
 }
 
-cmd_version() { echo "InfiniTech CPCU launch.sh v2.7 (April 2026)"; }
+cmd_version() { echo "InfiniTech CPCU launch.sh v3.0 (April 2026)"; }
 
 
 

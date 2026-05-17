@@ -43,7 +43,7 @@
 #define PYTHON3_BIN             "/usr/bin/python3"
 
 /* runtime config path. The default points to the symlinked
- * system path that setup_pi.sh creates (-> repo's cpcu_v2/config/runtime.json).
+ * system path that setup_pi.sh creates (-> repo's config/runtime.json).
  * Override with --config <path> for testing. */
 #define CONFIG_PATH_DEFAULT     "/opt/cpcu/config.json"
 #define CONFIG_PATH_FALLBACK    "config/runtime.json"
@@ -351,7 +351,7 @@ int main(int argc, char *argv[])
         LOG_F("KERN", "no usable runtime config — refusing to start.");
         LOG_F("KERN", "  To recover: run './launch.sh configure --reset --runtime'");
         LOG_F("KERN", "  Or restore from git: 'git checkout HEAD -- config/runtime.json'");
-        LOG_F("KERN", "  See cpcu_v2/docs/CONFIGURATION.md for the full schema.");
+        LOG_F("KERN", "  See docs/CONFIGURATION.md for the full schema.");
         Log_CloseFiles();
         return 1;
     }

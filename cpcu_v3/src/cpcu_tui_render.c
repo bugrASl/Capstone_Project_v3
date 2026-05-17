@@ -2056,7 +2056,7 @@ void draw_page_config(int r, IPC_Context *ipc)
             "unknown"
 #endif
             );
-    draw_lv(r, g_col_r, "Logs:",  CP_CYAN, "cpcu_v2/log/");
+    draw_lv(r, g_col_r, "Logs:",  CP_CYAN, "log/");
 }
 
 /*============= §4 FOOTER ==================================================================*/
