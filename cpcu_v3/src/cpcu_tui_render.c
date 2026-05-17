@@ -643,7 +643,7 @@ void draw_page_overview(int r, IPC_Context *ipc,
     memcpy(servo, (const void *)ipc->motor->servo_us, sizeof(servo));
     uint8_t gesture     =   ipc->motor->gesture_id;
     uint8_t confidence  =   ipc->motor->confidence;
-    float batt_v        =   latest.vbat_raw * (3.3f / 4095.0f) * 2.0f;
+    float batt_v = 0.0f;  /* v3: battery not sampled */
 
     /*===== HEALTH SUMMARY BANNER (rolled up from page 6) =====
      * One line showing green/yellow/red per subsystem so the user
@@ -668,7 +668,7 @@ void draw_page_overview(int r, IPC_Context *ipc,
         int ipcs  = (overflows > 0)      ? 2 : (ring_fill > 900 ? 1 : 0);
         int batt  = 0; /* v3: BSAU no longer samples battery */
         // was: (latest.vbat_raw > 0 && batt_v < 2.7f) ? 2
-                  : (latest.vbat_raw > 0 && batt_v < 3.0f) ? 1 : 0;
+        // v3: battery line removed
         int dsph  = (!dsp_rdy)           ? 2 : (dsp_lat > 50000 ? 2 : (dsp_lat > 20000 ? 1 : 0));
         int fsm   = (sys_state == IPC_STATE_SAFE)    ? 2
                   : (sys_state == IPC_STATE_RUNNING) ? 0 : 1;
@@ -749,8 +749,8 @@ void draw_page_overview(int r, IPC_Context *ipc,
         mvprintw(r + i, 1, "S%d %-5s %4u ", i, SERVO_NAMES[i], servo[i]);
         draw_slider(r + i, 16, servo[i], SERVO_MIN[i], SERVO_MAX[i], g_slider_w);
     }
-    draw_lv(r,     g_col_r, "Voltage:",   batt_v < 3.0f ? CP_BAD : CP_GOOD, "%.2f V  (pack)", batt_v);
-    draw_lv(r + 1, g_col_r, "Raw ADC:",   CP_CYAN, "%u  (12-bit, 0..4095)", latest.vbat_raw);
+    // draw_lv(r,     g_col_r, "Voltage:",   batt_v < 3.0f ? CP_BAD : CP_GOOD, "%.2f V  (pack)", batt_v);
+    // draw_lv(r + 1, g_col_r, "Raw ADC:",   CP_CYAN, "%u  (12-bit, 0..4095)", latest.vbat_raw);
     draw_lv(r + 2, g_col_r, "Level:",     batt_color(latest.flags), "%s", batt_str(latest.flags));
     draw_lv(r + 4, g_col_r, "Ring fill:", ring_fill > 100 ? CP_WARN : CP_GOOD,
             "%u / %u  (IPC buffer)", ring_fill, IPC_SENSOR_RING_SIZE);
@@ -861,7 +861,7 @@ void draw_page_radio(int r, IPC_Context *ipc,
     memset(&latest, 0, sizeof(latest));
     if(head > 0) latest = ipc->ring[(head - 1) & IPC_SENSOR_RING_MASK];
 
-    float batt_v = latest.vbat_raw * (3.3f / 4095.0f) * 2.0f;
+    float batt_v = 0.0f;  /* v3: battery not sampled */
 
     /* IO heartbeat age (how long since cpcu_io updated heartbeat timestamp).
      * The natural ceiling is HEARTBEAT_INTERVAL_US (~100 ms), so thresholds
@@ -898,7 +898,7 @@ void draw_page_radio(int r, IPC_Context *ipc,
             safe_ents > 0 ? CP_WARN : CP_GOOD, "%u  (times FSM went SAFE)", safe_ents);
     r++;
     draw_lv(r, 1,       "Payload:",     CP_CYAN, "32 B fixed");
-    draw_lv(r, g_col_r, "Batt (pack):", batt_v > 3.0f ? CP_GOOD : CP_BAD, "%.2f V", batt_v);
+    // draw_lv(r, g_col_r, "Batt (pack):", batt_v > 3.0f ? CP_GOOD : CP_BAD, "%.2f V", batt_v);
     r += 2;
 
     draw_hline(r - 1, 0, g_tui_w);
@@ -1001,7 +1001,7 @@ void draw_page_radio(int r, IPC_Context *ipc,
     printw("%u ms", rx_age_ms);
     attroff(COLOR_PAIR(rx_age_ms > 50 ? CP_WARN : CP_CYAN));
     printw("  vbat=");
-    attron(COLOR_PAIR(CP_CYAN)); printw("%u", latest.vbat_raw); attroff(COLOR_PAIR(CP_CYAN));
+    // attron(COLOR_PAIR(CP_CYAN)); printw("%u", latest.vbat_raw); attroff(COLOR_PAIR(CP_CYAN));
     printw("  batt=");
     attron(COLOR_PAIR(batt_color(latest.flags)) | A_BOLD);
     printw("%s", batt_str(latest.flags));
@@ -1243,7 +1243,7 @@ void draw_page_health(int r, IPC_Context *ipc,
     IPC_SensorEntry latest;
     memset(&latest, 0, sizeof(latest));
     if(head > 0) latest = ipc->ring[(head - 1) & IPC_SENSOR_RING_MASK];
-    float batt_v = latest.vbat_raw * (3.3f / 4095.0f) * 2.0f;
+    float batt_v = 0.0f;  /* v3: battery not sampled */
 
     uint32_t hb_age_ms = 0;
     {
@@ -1319,12 +1319,12 @@ void draw_page_health(int r, IPC_Context *ipc,
         ADD_ROW("Pkt integrity", 0, "%u seq gaps", gaps);
 
     /* 6. Battery */
-    if(batt_v < 2.7f && latest.vbat_raw > 0)
-        ADD_ROW("Battery",     2, "%.2f V  (< 2.7 V critical, SAFE trip)", batt_v);
-    else if(batt_v < 3.0f && latest.vbat_raw > 0)
-        ADD_ROW("Battery",     1, "%.2f V  (< 3.0 V warning)", batt_v);
+    // if(batt_v < 2.7f && latest.vbat_raw > 0)
+    // ADD_ROW("Battery",     2, "%.2f V  (< 2.7 V critical, SAFE trip)", batt_v);
+    // else if(batt_v < 3.0f && latest.vbat_raw > 0)
+    // ADD_ROW("Battery",     1, "%.2f V  (< 3.0 V warning)", batt_v);
     else
-        ADD_ROW("Battery",     0, "%.2f V  (pack OK)", batt_v);
+    // ADD_ROW("Battery",     0, "%.2f V  (pack OK)", batt_v);
 
     /* 7. DSP pipeline */
     if(!dsp_rdy)
@@ -1467,7 +1467,7 @@ void draw_page_health(int r, IPC_Context *ipc,
 
         /* Compute metrics from already-loaded telemetry */
         float est_latency_ms = (float)dsp_lat / 1000.0f + 200.0f + 20.0f;
-        float batt_req = (latest.vbat_raw > 0) ? batt_v : 99.0f;
+        float batt_req = 99.0f;  /* v3: battery bypassed */
 
         char buf1[64], buf2[64], buf3[64], buf4[64], buf5[64], buf6[64], buf7[64];
         snprintf(buf1, 64, "%.0f ms (obs+inf+servo)", est_latency_ms);
@@ -1513,7 +1513,7 @@ void draw_page_health(int r, IPC_Context *ipc,
     /* Helper macro: evaluate a requirement and draw one row */
     #define REQ_ROW(id, name, pass_cond, fmt, ...) do {         r++;         int _p = (pass_cond);         if(_p) req_pass++; else req_fail++;         attron(COLOR_PAIR(_p ? CP_GOOD : CP_BAD) | A_BOLD);         mvprintw(r, 2, "[%s]", _p ? "PASS" : "FAIL");         attroff(COLOR_PAIR(_p ? CP_GOOD : CP_BAD) | A_BOLD);         attron(COLOR_PAIR(CP_DIM));         printw("  %-12s %-28s ", id, name);         attroff(COLOR_PAIR(CP_DIM));         printw(fmt, __VA_ARGS__);     } while(0)
 
-    float batt_v_req = latest.vbat_raw * (3.3f / 4095.0f) * 2.0f;
+    float batt_v = 0.0f;  /* v3: battery not sampled */
     uint32_t sample_rate_est = pkt_rate * 2;  /* 2 samples per packet */
 
     /* ── SYS-REQ-01: End-to-End Latency ── */
@@ -1525,7 +1525,7 @@ void draw_page_health(int r, IPC_Context *ipc,
     /* ── SYS-REQ-03: Durability (battery + uptime) ── */
     REQ_ROW("SYS-REQ-03a", "Battery (not sampled)",
             1,  /* always pass — BSAU no longer samples battery */
-            "%s", latest.vbat_raw == 0 ? "N/A (bypassed)" : "bypassed");
+            "%s", "N/A (not sampled)");
 
     {   /* Track uptime from first call */
         static uint64_t health_boot_ms = 0;
