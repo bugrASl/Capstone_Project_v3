@@ -126,6 +126,21 @@ PYEOF
 
 ok "Added '${GNAME}' to gestures.json"
 
+# generate freq tone wav
+python3 -c "
+import wave, numpy as np, os
+sr=22050; fhz=${FREQ}; ms=${DUR}; n=int(sr*ms/1000)
+t=np.linspace(0,ms/1000,n,False)
+fade=min(int(sr*0.005),n//4)
+env=np.ones(n)
+if fade>0: env[:fade]=np.linspace(0,1,fade); env[-fade:]=np.linspace(1,0,fade)
+d=(np.sin(2*np.pi*fhz*t)*env*16000).astype(np.int16)
+p=os.path.join('${AUDIO_DIR}','_gen_${GNAME}_${FREQ}hz.wav')
+with wave.open(p,'w') as w:
+    w.setnchannels(1);w.setsampwidth(2);w.setframerate(sr);w.writeframes(d.tobytes())
+print(f'  Tone: ${FREQ}Hz/${DUR}ms')
+" 2>/dev/null && ok "Freq tone generated" || true
+
 echo
 echo -e "${C}═════════════════════════════════════════════${N}"
 echo -e "  ${G}Gesture '${GNAME}' created.${N}"

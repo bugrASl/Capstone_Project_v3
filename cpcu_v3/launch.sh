@@ -2067,6 +2067,47 @@ print("  \033[32m✓\033[0m Removed '${name}'. Run './launch.sh reload' to apply
 PYEOF
 }
 
+
+# generate voice + freq audio for one gesture (called after add/rename)
+_regen_gesture_audio() {
+    local gname="$1"
+    local gs="${GS}"
+    python3 -c "
+import json, subprocess, os, wave, numpy as np
+with open('${gs}') as f: g = json.load(f)
+gdef = g.get('gestures', {}).get('${gname}')
+if not gdef: exit(0)
+audio = gdef.get('audio', {})
+audio_dir = os.path.join(os.path.dirname('${gs}'), 'audio_cues')
+os.makedirs(audio_dir, exist_ok=True)
+# voice cue
+vname = audio.get('voice')
+if vname:
+    wav = os.path.join(audio_dir, f'{vname}.wav')
+    text = '${gname}'.replace('_', ' ')
+    try:
+        subprocess.run(['espeak-ng','-v','en','-s','180','-p','40','-a','150','-w',wav,text],
+                       check=True, capture_output=True)
+        print(f'  voice: {vname}.wav')
+    except FileNotFoundError:
+        print(f'  espeak-ng not found — run ./launch.sh generate-cues later')
+# freq tone
+fhz = audio.get('freq_hz', 0)
+fms = audio.get('freq_ms', 80)
+if fhz > 0:
+    sr = 22050; n = int(sr * fms / 1000)
+    t = np.linspace(0, fms/1000, n, False)
+    fade = min(int(sr*0.005), n//4)
+    env = np.ones(n)
+    if fade > 0: env[:fade] = np.linspace(0,1,fade); env[-fade:] = np.linspace(1,0,fade)
+    data = (np.sin(2*np.pi*fhz*t)*env*16000).astype(np.int16)
+    tp = os.path.join(audio_dir, f'_gen_${gname}_{fhz}hz.wav')
+    with wave.open(tp,'w') as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes(data.tobytes())
+    print(f'  tone: {fhz}Hz/{fms}ms')
+" 2>/dev/null
+}
+
 # ── rename-gesture ──
 cmd_rename_gesture() {
     local old="${1:-}" new="${2:-}"
