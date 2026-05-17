@@ -1881,110 +1881,6 @@ shift || true
 #   ./launch.sh collect --with-ws
 # We strip the flag here from $@ so the remaining args pass cleanly
 # through to the underlying command.
-WITH_WS=0
-WITH_AUDIO=0
-WITH_UART=0
-OPERATOR="default"
-NEW_ARGS=()
-for arg in "$@"; do
-    case "${arg}" in
-        --with-ws|--ws) WITH_WS=1 ;;
-        --audio)        WITH_AUDIO=1 ;;
-        --uart)         WITH_UART=1 ;;
-        --operator)     _NEXT_IS_OPERATOR=1 ;;
-        *)
-            if [ "${_NEXT_IS_OPERATOR:-0}" = "1" ]; then
-                OPERATOR="${arg}"
-                _NEXT_IS_OPERATOR=0
-            else
-                NEW_ARGS+=("${arg}")
-            fi
-            ;;
-    esac
-done
-set -- "${NEW_ARGS[@]+"${NEW_ARGS[@]}"}"
-export CPCU_OPERATOR="${OPERATOR}"
-[ "${WITH_UART}" = "1" ] && export CPCU_UART_DEBUG="/dev/ttyAMA0"
-
-case "${MODE}" in
-    -h|--help|help)         cmd_help "$@" ;;
-    -v|--version|version)   cmd_version ;;
-
-    setup)                  cmd_setup "$@" ;;
-    build)                  cmd_build "$@" ;;
-    vendor)                 cmd_vendor "$@" ;;
-    check)                  cmd_check ;;
-    configure)              cmd_configure "$@" ;;
-
-    test-sw)                cmd_test_phase "1" ;;
-    test-ipc)               cmd_test_phase "1 2" ;;
-    test-hw)                cmd_test_phase "1 2 3" ;;
-    # The interactive testbench dispatches go through launch.sh's own
-    # kernel-aware helpers (which spawn cpcu_kernel inside a tmux
-    # session as needed), not through run_tests.sh — `test-pca`,
-    # `test-signal`, and `test-signal-demo` all become aliases for
-    # the equivalent operating-mode commands so users get a usable
-    # session out of the box without having to start the kernel
-    # manually first.
-    test-pca)               run_pca ;;
-    test-nrf)               run_nrf "$@" ;;
-    test-signal)            run_signal ;;
-    test-signal-demo)       run_signal_demo ;;
-    test-safety-demo)       cmd_test_phase "safety-demo" ;;
-    test-system)            cmd_test_system "$@" ;;
-
-    kernel|"")
-        if [ -z "${MODE}" ] && [ -t 0 ] && [ -t 1 ]; then
-            show_menu
-        else
-            run_kernel_only
-        fi
-        ;;
-    tui)                    run_tui ;;
-    collect)                run_collect ;;
-    signal)                 run_signal ;;
-    pca)                    run_pca ;;
-    nrf)                    run_nrf "$@" ;;
-    smoother)               run_smoother "$@" ;;
-    menu)                   show_menu ;;
-    ws)                     cmd_ws "$@" ;;
-
-    attach)                 cmd_attach ;;
-    stop)                   cmd_stop ;;
-
-    grant-caps)             cmd_grant_caps ;;
-    install-service)        cmd_install_service ;;
-    install-ws-service)     cmd_install_ws_service ;;
-
-    # v3.0 commands
-    setup-audio)            cmd_setup_audio "$@" ;;
-    setup-uart)             cmd_setup_uart "$@" ;;
-    grip-tune)              run_grip_tune "$@" ;;
-    calibrate)              run_calibrate "$@" ;;
-    add-gesture)            run_add_gesture "$@" ;;
-    remove-gesture)         cmd_remove_gesture "$@" ;;
-    rename-gesture)         cmd_rename_gesture "$@" ;;
-    edit-gesture)           cmd_edit_gesture "$@" ;;
-    add-motor)              cmd_add_motor "$@" ;;
-    edit-motor)             cmd_edit_motor "$@" ;;
-    rename-motor)           cmd_rename_motor "$@" ;;
-    set-channels)           run_set_channels "$@" ;;
-    set-model)              cmd_set_model "$@" ;;
-    generate-cues)          run_generate_cues "$@" ;;
-    audio)                  cmd_audio "$@" ;;
-    show-config)            cmd_show_config ;;
-    show-gestures)          cmd_show_gestures ;;
-    reload)                 cmd_reload "$@" ;;
-
-    *)
-        err "Unknown command: ${MODE}"
-        echo
-        echo "Run './launch.sh help' for the full command reference."
-        echo "Common commands: setup, build, check, test-sw, tui, ws, stop, help"
-        exit 2
-        ;;
-esac
-
 
 # ══════════════════════════════════════════════════════════════════════
 #  v3.0 COMMANDS — merged from launch_additions.sh
@@ -2402,4 +2298,110 @@ cmd_reload() {
 # ══════════════════════════════════════════════════════════════════
 #  HELP TEXT
 # ══════════════════════════════════════════════════════════════════
+
+
+WITH_WS=0
+WITH_AUDIO=0
+WITH_UART=0
+OPERATOR="default"
+NEW_ARGS=()
+for arg in "$@"; do
+    case "${arg}" in
+        --with-ws|--ws) WITH_WS=1 ;;
+        --audio)        WITH_AUDIO=1 ;;
+        --uart)         WITH_UART=1 ;;
+        --operator)     _NEXT_IS_OPERATOR=1 ;;
+        *)
+            if [ "${_NEXT_IS_OPERATOR:-0}" = "1" ]; then
+                OPERATOR="${arg}"
+                _NEXT_IS_OPERATOR=0
+            else
+                NEW_ARGS+=("${arg}")
+            fi
+            ;;
+    esac
+done
+set -- "${NEW_ARGS[@]+"${NEW_ARGS[@]}"}"
+export CPCU_OPERATOR="${OPERATOR}"
+[ "${WITH_UART}" = "1" ] && export CPCU_UART_DEBUG="/dev/ttyAMA0"
+
+case "${MODE}" in
+    -h|--help|help)         cmd_help "$@" ;;
+    -v|--version|version)   cmd_version ;;
+
+    setup)                  cmd_setup "$@" ;;
+    build)                  cmd_build "$@" ;;
+    vendor)                 cmd_vendor "$@" ;;
+    check)                  cmd_check ;;
+    configure)              cmd_configure "$@" ;;
+
+    test-sw)                cmd_test_phase "1" ;;
+    test-ipc)               cmd_test_phase "1 2" ;;
+    test-hw)                cmd_test_phase "1 2 3" ;;
+    # The interactive testbench dispatches go through launch.sh's own
+    # kernel-aware helpers (which spawn cpcu_kernel inside a tmux
+    # session as needed), not through run_tests.sh — `test-pca`,
+    # `test-signal`, and `test-signal-demo` all become aliases for
+    # the equivalent operating-mode commands so users get a usable
+    # session out of the box without having to start the kernel
+    # manually first.
+    test-pca)               run_pca ;;
+    test-nrf)               run_nrf "$@" ;;
+    test-signal)            run_signal ;;
+    test-signal-demo)       run_signal_demo ;;
+    test-safety-demo)       cmd_test_phase "safety-demo" ;;
+    test-system)            cmd_test_system "$@" ;;
+
+    kernel|"")
+        if [ -z "${MODE}" ] && [ -t 0 ] && [ -t 1 ]; then
+            show_menu
+        else
+            run_kernel_only
+        fi
+        ;;
+    tui)                    run_tui ;;
+    collect)                run_collect ;;
+    signal)                 run_signal ;;
+    pca)                    run_pca ;;
+    nrf)                    run_nrf "$@" ;;
+    smoother)               run_smoother "$@" ;;
+    menu)                   show_menu ;;
+    ws)                     cmd_ws "$@" ;;
+
+    attach)                 cmd_attach ;;
+    stop)                   cmd_stop ;;
+
+    grant-caps)             cmd_grant_caps ;;
+    install-service)        cmd_install_service ;;
+    install-ws-service)     cmd_install_ws_service ;;
+
+    # v3.0 commands
+    setup-audio)            cmd_setup_audio "$@" ;;
+    setup-uart)             cmd_setup_uart "$@" ;;
+    grip-tune)              run_grip_tune "$@" ;;
+    calibrate)              run_calibrate "$@" ;;
+    add-gesture)            run_add_gesture "$@" ;;
+    remove-gesture)         cmd_remove_gesture "$@" ;;
+    rename-gesture)         cmd_rename_gesture "$@" ;;
+    edit-gesture)           cmd_edit_gesture "$@" ;;
+    add-motor)              cmd_add_motor "$@" ;;
+    edit-motor)             cmd_edit_motor "$@" ;;
+    rename-motor)           cmd_rename_motor "$@" ;;
+    set-channels)           run_set_channels "$@" ;;
+    set-model)              cmd_set_model "$@" ;;
+    generate-cues)          run_generate_cues "$@" ;;
+    audio)                  cmd_audio "$@" ;;
+    show-config)            cmd_show_config ;;
+    show-gestures)          cmd_show_gestures ;;
+    reload)                 cmd_reload "$@" ;;
+
+    *)
+        err "Unknown command: ${MODE}"
+        echo
+        echo "Run './launch.sh help' for the full command reference."
+        echo "Common commands: setup, build, check, test-sw, tui, ws, stop, help"
+        exit 2
+        ;;
+esac
+
 
