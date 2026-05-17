@@ -1891,7 +1891,7 @@ shift || true
 ##  Paste into existing launch.sh at marked locations.
 ## ═══════════════════════════════════════════════════════════════════
 
-GS="${CPCU_ROOT}/config/gestures.json"
+GS="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/config/gestures.json"
 
 # ══════════════════════════════════════════════════════════════════
 #  HELPERS
@@ -1913,7 +1913,7 @@ cmd_setup_uart()     { _run_script setup_uart.sh "$@"; }
 
 # ── show-config: print EVERYTHING ──
 cmd_show_config() {
-    python3 << 'PYEOF'
+    python3 << PYEOF
 import json, os
 gs_path = os.environ.get("CPCU_GS", "") or "${GS}"
 with open(gs_path) as f: g = json.load(f)
