@@ -200,6 +200,8 @@ def collect_metrics(ipc, duration_s):
     infer_start  = ipc.read_diag_dsp_inferences()
 
     latency_samples = []
+    pkt_latency_samples = []  # packet-to-servo (measured)
+    seq_age_samples = []      # seq number staleness
     servo_violations = 0
     hb_ages = []
     temps = []
@@ -216,6 +218,16 @@ def collect_metrics(ipc, duration_s):
         lat = ipc.read_diag_dsp_max_latency_us()
         if lat > 0:
             latency_samples.append(lat / 1000.0)  # us -> ms
+
+        # Packet-based latency (v3: real measured rx-to-servo)
+        try:
+            plat = ipc.read_latency_pkt()
+            if plat['pkt_to_servo_us'] > 0:
+                pkt_latency_samples.append(plat['pkt_to_servo_us'] / 1000.0)
+            if plat['seq_age'] > 0:
+                seq_age_samples.append(plat['seq_age'])
+        except Exception:
+            pass
 
         # Servo range check
         try:
@@ -271,10 +283,22 @@ def collect_metrics(ipc, duration_s):
     max_lat = max(latency_samples) if latency_samples else 0
     p50_lat = sorted(latency_samples)[len(latency_samples)//2] if latency_samples else 0
 
-    # Estimate pipeline latency: observation (200ms) + inference + smoother
-    # The max recorded inference latency plus the observation window gives
-    # worst-case end-to-end. The smoother adds up to 20ms (one 50Hz tick).
-    estimated_e2e_ms = 200 + max_lat + 20  # observation + inference + servo tick
+    # Packet-based E2E latency (real measurement: oldest rx_time → servo write)
+    if pkt_latency_samples:
+        pkt_sorted = sorted(pkt_latency_samples)
+        pkt_e2e_avg = sum(pkt_latency_samples) / len(pkt_latency_samples)
+        pkt_e2e_max = pkt_sorted[-1]
+        pkt_e2e_p95 = pkt_sorted[int(len(pkt_sorted) * 0.95)]
+        pkt_e2e_min = pkt_sorted[0]
+        estimated_e2e_ms = pkt_e2e_max  # use real measurement
+    else:
+        pkt_e2e_avg = 0
+        pkt_e2e_max = 0
+        pkt_e2e_p95 = 0
+        pkt_e2e_min = 0
+        estimated_e2e_ms = 200 + max_lat + 20  # fallback: estimate
+
+    avg_seq_age = (sum(seq_age_samples) / len(seq_age_samples)) if seq_age_samples else 0
 
     # Battery from latest packet
     batt_v = 0.0
@@ -312,6 +336,12 @@ def collect_metrics(ipc, duration_s):
         "cpu_temp_c":           max_temp,
         "inference_p50_ms":     p50_lat,
         "seq_gap_pct":          gap_pct,
+        # packet-based latency (v3)
+        "pkt_e2e_avg_ms":       pkt_e2e_avg,
+        "pkt_e2e_max_ms":       pkt_e2e_max,
+        "pkt_e2e_p95_ms":       pkt_e2e_p95,
+        "pkt_e2e_min_ms":       pkt_e2e_min,
+        "avg_seq_age":          avg_seq_age,
         # Raw counters for the report
         "_pkts_total":          pkts_delta,
         "_gaps_total":          gaps_delta,
@@ -442,8 +472,32 @@ def main():
     print(f"  Inference: {metrics['_infer_total']} inferences "
           f"= {metrics['inference_rate_hz']:.1f} Hz, "
           f"max {metrics['_max_infer_ms']:.1f} ms")
-    print(f"  Pipeline E2E estimate: {metrics['max_latency_ms']:.0f} ms "
-          f"(observation 200 + inference {metrics['_max_infer_ms']:.0f} + servo 20)")
+
+    # comprehensive latency report
+    print()
+    print("  LATENCY BREAKDOWN")
+    print("  " + "─" * 55)
+    if metrics['pkt_e2e_avg_ms'] > 0:
+        print(f"  Packet-to-servo (measured from rx_time → motor write):")
+        print(f"    Avg    : {metrics['pkt_e2e_avg_ms']:8.1f} ms")
+        print(f"    Min    : {metrics['pkt_e2e_min_ms']:8.1f} ms")
+        print(f"    P95    : {metrics['pkt_e2e_p95_ms']:8.1f} ms")
+        print(f"    Max    : {metrics['pkt_e2e_max_ms']:8.1f} ms")
+        print(f"  Seq age  : {metrics['avg_seq_age']:8.0f} packets "
+              f"({metrics['avg_seq_age']:.0f} ms at 1kHz)")
+    else:
+        print(f"  Packet-to-servo: not available (no rx_time data)")
+        print(f"  Estimated E2E  : {metrics['max_latency_ms']:.0f} ms "
+              f"(200 obs + {metrics['_max_infer_ms']:.0f} inf + 20 servo)")
+    print()
+    print(f"  Processing (per window):")
+    print(f"    DSP + ML   : {metrics['_max_infer_ms']:8.1f} ms max")
+    print(f"    DSP + ML   : {metrics['inference_p50_ms']:8.1f} ms P50")
+    print(f"  Algorithmic (design parameters):")
+    print(f"    Window     :      200 ms (fixed, 400 samples @ 2kHz)")
+    print(f"    Stride wait:    ~25.0 ms (avg, 0-50 ms uniform)")
+    print(f"    Hysteresis :   variable (rest→active: 400ms, a→a: 600ms)")
+    print("  " + "─" * 55)
 
     if total_fail == 0:
         print(f"\n  \033[32m{'=' * 50}\033[0m")

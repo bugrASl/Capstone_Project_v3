@@ -353,6 +353,8 @@ def run_inference(verbose=False, operator="default"):
 
     # ── state ──
     buffers = [deque([0]*BUFFER_SIZE, maxlen=BUFFER_SIZE) for _ in range(num_ch)]
+    rx_times = deque([0]*BUFFER_SIZE, maxlen=BUFFER_SIZE)  # Pi rx timestamp per sample
+    seq_history = deque([0]*BUFFER_SIZE, maxlen=BUFFER_SIZE)  # packet seq per sample
     samples_since_window = 0
     total_samples = 0
     current_state = "rest"
@@ -364,6 +366,10 @@ def run_inference(verbose=False, operator="default"):
     edit_mode = False
     inferences = 0
     last_report = time.monotonic()
+    lat_pkt_samples = []   # pkt→servo ms per window
+    lat_seq_samples = []   # seq age per window
+    lat_dsp_samples = []   # dsp+ml ms per window
+    lat_drain_samples = [] # ring drain ms per window
 
     running = [True]
     def stop(sig, _):
@@ -381,11 +387,20 @@ def run_inference(verbose=False, operator="default"):
         if n > 0:
             ipc.inc_dsp_batches(n)
             samples = batch['samples']
+            batch_seq = batch.get('seq')
+            batch_rx = batch.get('rx_time_us')
             for ei in range(n):
                 for si in range(2):
                     for bi, ch in enumerate(active_channels):
                         buffers[bi].append(
                             int(samples[ei, si, ch]) - ADC_MIDRAIL)
+                # track rx_time and seq per sample pair (2 samples per packet)
+                if batch_rx is not None and batch_rx[ei] > 0:
+                    rx_times.append(int(batch_rx[ei]))
+                    rx_times.append(int(batch_rx[ei]))  # 2 samples per pkt
+                if batch_seq is not None:
+                    seq_history.append(int(batch_seq[ei]))
+                    seq_history.append(int(batch_seq[ei]))
             added = n * 2
             samples_since_window += added
             total_samples += added
@@ -515,18 +530,73 @@ def run_inference(verbose=False, operator="default"):
                 ipc.write_motor_cmd(servo_us, last_active, conf_pct)
                 t_vel = time.monotonic() - t_vel_start
 
+            # ── 7b. packet-based latency measurement ──
+            t_servo_us = int(time.monotonic() * 1e6)
+            rx_list = list(rx_times)
+            seq_list = list(seq_history)
+            if len(rx_list) >= WINDOW_HI:
+                oldest_rx = rx_list[-WINDOW_HI]
+                newest_rx = rx_list[-1]
+                if oldest_rx > 0:
+                    pkt_to_servo_us = t_servo_us - oldest_rx
+                    ring_dwell_us = int(t_drain * 1e6)
+                    oldest_seq = seq_list[-WINDOW_HI] & 0xFF
+                    newest_seq = seq_list[-1] & 0xFF
+                    seq_age = (newest_seq - oldest_seq) & 0xFF
+                    ipc.write_latency_pkt(
+                        pkt_to_servo_us=pkt_to_servo_us,
+                        ring_dwell_us=ring_dwell_us,
+                        dsp_compute_us=int(t_dsp * 1e6),
+                        seq_age=seq_age,
+                    )
+                    # accumulate for periodic report
+                    lat_pkt_samples.append(pkt_to_servo_us / 1000.0)
+                    lat_seq_samples.append(seq_age)
+                    lat_dsp_samples.append(t_dsp * 1e3)
+                    lat_drain_samples.append(t_drain * 1e3)
+
             ipc.inc_dsp_inferences()
             inferences += 1
 
             if verbose:
-                print(f"[DSP] {current_state} {conf_pct}% "
-                      f"drain={t_drain*1e3:.1f}ms dsp={t_dsp*1e3:.1f}ms",
+                pkt_ms = pkt_to_servo_us / 1000.0 if 'pkt_to_servo_us' in dir() else 0
+                print(f"[DSP] {current_state} {conf_pct}%  "
+                      f"pkt→servo={pkt_ms:.1f}ms  "
+                      f"drain={t_drain*1e3:.1f}ms  "
+                      f"dsp={t_dsp*1e3:.1f}ms  "
+                      f"seq_age={seq_age if 'seq_age' in dir() else '?'}",
                       flush=True)
 
-        # ── 8. periodic report ──
+        # ── 8. periodic report (every 5s) ──
         if t0 - last_report >= 5.0:
-            print(f"[DSP] inf={inferences} state={current_state} "
+            print(f"[DSP] ── latency report ──────────────────────", flush=True)
+            print(f"[DSP]   state={current_state}  inf={inferences}  "
                   f"ring={ipc.sensor_count()}", flush=True)
+            if lat_pkt_samples:
+                s = sorted(lat_pkt_samples)
+                avg = sum(s) / len(s)
+                p95 = s[int(len(s) * 0.95)] if len(s) > 1 else s[0]
+                print(f"[DSP]   pkt→servo: avg={avg:.1f}ms  "
+                      f"min={s[0]:.1f}ms  p95={p95:.1f}ms  "
+                      f"max={s[-1]:.1f}ms  ({len(s)} samples)", flush=True)
+            if lat_seq_samples:
+                avg_seq = sum(lat_seq_samples) / len(lat_seq_samples)
+                print(f"[DSP]   seq age:   avg={avg_seq:.0f} pkts "
+                      f"({avg_seq:.0f}ms @1kHz)", flush=True)
+            if lat_dsp_samples:
+                davg = sum(lat_dsp_samples) / len(lat_dsp_samples)
+                dmax = max(lat_dsp_samples)
+                print(f"[DSP]   dsp+ml:    avg={davg:.1f}ms  "
+                      f"max={dmax:.1f}ms", flush=True)
+            if lat_drain_samples:
+                dravg = sum(lat_drain_samples) / len(lat_drain_samples)
+                print(f"[DSP]   ring drain: avg={dravg:.2f}ms", flush=True)
+            print(f"[DSP] ────────────────────────────────────────", flush=True)
+            # reset accumulators
+            lat_pkt_samples.clear()
+            lat_seq_samples.clear()
+            lat_dsp_samples.clear()
+            lat_drain_samples.clear()
             last_report = t0
 
         # ── 9. sleep remainder ──

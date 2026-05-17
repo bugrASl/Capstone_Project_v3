@@ -146,6 +146,11 @@ EXPORT_NUM_CLASSES      =   88
 EXPORT_ACTIVE_CLASS     =   89
 EXPORT_INF_TIME         =   92          # uint32
 EXPORT_UPDATE_SEQ       =   96          # uint32
+# v3: packet-based latency (in DSP export padding, bytes 100-115)
+EXPORT_PKT_LATENCY      =   100         # uint32: packet rx → servo write (µs)
+EXPORT_SEQ_AGE          =   104         # uint32: oldest seq age in window
+EXPORT_RING_DWELL       =   108         # uint32: ring dwell time (µs)
+EXPORT_DSP_US           =   112         # uint32: DSP compute time (µs)
 
 # ══════════════════════════════════════════════════════════════════════
 #  FIELD OFFSETS within IPC_DspFiltered
@@ -309,6 +314,7 @@ class IPCBridge:
         loss_arr            =   np.zeros(n, dtype=np.uint8)
         ts_arr              =   np.zeros(n, dtype=np.uint16)
         vbat_arr            =   np.zeros(n, dtype=np.uint16)
+        rxtime_arr          =   np.zeros(n, dtype=np.uint64)
 
         for i in range(n):
             idx             =   (tail + i) & RING_MASK
@@ -327,6 +333,7 @@ class IPCBridge:
             loss_arr[i]     =   self.mm[base + ENTRY_LOSS]
             ts_arr[i]       =   self._r16(base + ENTRY_TIMESTAMP)
             vbat_arr[i]     =   self._r16(base + ENTRY_VBAT)
+            rxtime_arr[i]   =   struct.unpack_from('<Q', self.mm, base + ENTRY_RXTIME)[0]
 
         # Advance tail (we are the sole consumer)
         self._write_tail(tail + n)
@@ -340,6 +347,7 @@ class IPCBridge:
             'pkt_loss':     loss_arr,
             'timestamp':    ts_arr,
             'vbat_raw':     vbat_arr,
+            'rx_time_us':   rxtime_arr,
         }
 
     def sensor_count(self):
@@ -540,6 +548,34 @@ class IPCBridge:
     def read_diag_ring_overflows(self): return self._r32(OFF_DIAG + DIAG_OVERFLOWS)
     def read_diag_dsp_inferences(self): return self._r32(OFF_DIAG + DIAG_INFERENCES)
     def read_diag_dsp_max_latency_us(self): return self._r32(OFF_DIAG + DIAG_MAXLAT)
+
+    def write_latency_pkt(self, pkt_to_servo_us, ring_dwell_us,
+                          dsp_compute_us, seq_age):
+        """Write packet-based latency to DSP export padding (bytes 100-115)."""
+        b = OFF_EXPORT
+        self._w32(b + EXPORT_PKT_LATENCY, int(pkt_to_servo_us) & 0xFFFFFFFF)
+        self._w32(b + EXPORT_SEQ_AGE, int(seq_age) & 0xFFFFFFFF)
+        self._w32(b + EXPORT_RING_DWELL, int(ring_dwell_us) & 0xFFFFFFFF)
+        self._w32(b + EXPORT_DSP_US, int(dsp_compute_us) & 0xFFFFFFFF)
+
+    def read_latency_pkt(self):
+        """Read packet-based latency from DSP export padding."""
+        b = OFF_EXPORT
+        return {
+            'pkt_to_servo_us': self._r32(b + EXPORT_PKT_LATENCY),
+            'seq_age': self._r32(b + EXPORT_SEQ_AGE),
+            'ring_dwell_us': self._r32(b + EXPORT_RING_DWELL),
+            'dsp_compute_us': self._r32(b + EXPORT_DSP_US),
+        }
+
+    def read_dsp_gesture_name(self):
+        """Read gesture name from DSP export (16-byte null-terminated)."""
+        base = OFF_EXPORT + EXPORT_NAME
+        raw = self.mm[base:base + 16]
+        end = raw.find(b'\x00')
+        if end >= 0:
+            raw = raw[:end]
+        return raw.decode('ascii', errors='replace').strip()
 
     def read_motor_cmd_servos(self):
         """Read the 6 servo pulse widths from the motor command region."""
