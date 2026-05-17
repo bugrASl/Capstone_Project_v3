@@ -81,7 +81,7 @@ if [ "$PHASES" = "pca" ]; then
         echo "  Build it first:"
         echo "    cd build && cmake --build . --target pca_testbench"
         echo "  Or standalone:"
-        echo "    gcc -Iinc -o pca_testbench test/pca_testbench.c src/cpcu_pca9685.c -lncurses -lm"
+        echo "    gcc -Iinclude -Iwire -Inrf -o pca_testbench test/pca_testbench.c src/cpcu_pca9685.c -lncurses -lm"
         exit 1
     fi
 
@@ -124,8 +124,8 @@ if [ "$PHASES" = "signal" ]; then
         echo "  Build it first:"
         echo "    cd build && cmake --build . --target signal_testbench"
         echo "  Or standalone:"
-        echo "    gcc -Iinc -o signal_testbench test/signal_testbench.c src/cpcu_ipc.c \\"
-        echo "        src/wireless_packet.c -lncurses -lrt -lm"
+        echo "    gcc -Iinclude -Iwire -Inrf -o signal_testbench test/signal_testbench.c src/cpcu_ipc.c \\"
+        echo "        wire/wireless_packet.c -lncurses -lrt -lm"
         exit 1
     fi
 
@@ -236,8 +236,8 @@ if echo "$PHASES" | grep -q "1"; then
             cd build && make test_codec && cd ..
             CODEC_BIN="build/test_codec"
         else
-            gcc -O2 -Iinc -o test_codec \
-                test/test_codec.c src/wireless_packet.c -lm
+            gcc -O2 -Iinclude -Iwire -Inrf -o test_codec \
+                test/test_codec.c wire/wireless_packet.c -lm
             CODEC_BIN="./test_codec"
         fi
     fi

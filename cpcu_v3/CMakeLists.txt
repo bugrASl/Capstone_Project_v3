@@ -40,12 +40,12 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 add_compile_options(-Wall -Wextra -Wpedantic -O2 -D_GNU_SOURCE)
 
-include_directories(${CMAKE_SOURCE_DIR}/include)
+include_directories(${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/wire ${CMAKE_SOURCE_DIR}/nrf)
 
 ##============= SHARED STATIC LIBRARIES ====================================================
 
 ## Codec: wireless packet pack/unpack (platform-independent, shared with BSAU)
-add_library(cpcu_codec STATIC src/wireless_packet.c)
+add_library(cpcu_codec STATIC wire/wireless_packet.c)
 
 ## IPC: POSIX shared memory ring buffer + SeqLock
 add_library(cpcu_ipc STATIC src/cpcu_ipc.c)
@@ -63,7 +63,7 @@ target_link_libraries(cpcu_config PUBLIC cpcu_ipc)
 ## Core 3: Real-time I/O (NRF + PCA9685 + Safety + Servo Smoother)
 add_executable(cpcu_io
     src/cpcu_io.c
-    src/nrf24l01_linux.c
+    nrf/nrf24l01_linux.c
     src/cpcu_pca9685.c
     src/cpcu_safety.c
     src/cpcu_smooth.c
@@ -155,7 +155,7 @@ target_link_libraries(config_testbench PRIVATE cpcu_config cpcu_ipc m)
 ## NRF24L01+ testbench (self-test + packet reception, no ncurses needed)
 add_executable(nrf_testbench
     test/nrf_testbench.c
-    src/nrf24l01_linux.c
+    nrf/nrf24l01_linux.c
 )
 target_link_libraries(nrf_testbench PRIVATE rt)
 
