@@ -35,7 +35,7 @@ cat > .gitignore << 'EOF'
 build/
 *.o
 *.d
-cpcu_v2/build/
+build/
 
 # Python
 __pycache__/
@@ -43,14 +43,14 @@ __pycache__/
 .venv/
 
 # logs
-cpcu_v2/log/
+log/
 *.log
 
 # generated audio (regenerate with ./launch.sh generate-cues)
-cpcu_v2/config/audio_cues/_gen_*
+config/audio_cues/_gen_*
 
 # datasets (too large for git)
-cpcu_v2/datasets/*.csv
+datasets/*.csv
 
 # OS
 .DS_Store
@@ -70,11 +70,11 @@ EOF
 
 # extract the v3 overlay into your project
 # (adjust path to where you downloaded v3_files.tar.gz)
-tar xzf ~/Downloads/v3_files.tar.gz -C cpcu_v2/
+tar xzf ~/Downloads/v3_files.tar.gz -C 
 
 # make scripts executable
-chmod +x cpcu_v2/scripts/*.sh
-chmod +x cpcu_v2/python/*.py
+chmod +x scripts/*.sh
+chmod +x python/*.py
 
 
 ## ═══════════════════════════════════════════════
