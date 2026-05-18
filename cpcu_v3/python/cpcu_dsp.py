@@ -37,15 +37,15 @@ INSTALLED_CFG   = "/opt/cpcu/config.json"
 THRESHOLDS_PATH = os.path.join(MODEL_DIR, "noise_thresholds.json")
 
 # ── sampling ──
-INPUT_FS_HZ     = 2000
+INPUT_FS_HZ     = 1000    # matches BSAU 1kHz packet rate (1 sample per pkt after averaging)
 TARGET_FS_HZ    = 200
-DECIMATE_FACTOR = INPUT_FS_HZ // TARGET_FS_HZ  # 10
+DECIMATE_FACTOR = INPUT_FS_HZ // TARGET_FS_HZ  # 5
 WINDOW_MS       = 200
 STRIDE_MS       = 100
-WINDOW_HI       = INPUT_FS_HZ  * WINDOW_MS // 1000   # 400
-STRIDE_HI       = INPUT_FS_HZ  * STRIDE_MS // 1000   # 200
+WINDOW_HI       = INPUT_FS_HZ  * WINDOW_MS // 1000   # 200  (200ms @ 1kHz)
+STRIDE_HI       = INPUT_FS_HZ  * STRIDE_MS // 1000   # 100  (100ms stride @ 1kHz)
 WINDOW_LO       = TARGET_FS_HZ * WINDOW_MS // 1000   # 40
-BUFFER_SIZE     = WINDOW_HI * 4                       # 1600
+BUFFER_SIZE     = WINDOW_HI * 4                       # 800
 
 # ── defaults (overridden by config files) ──
 ADC_MIDRAIL     = 2048
@@ -103,7 +103,18 @@ def load_gestures(path=GESTURES_PATH):
             gdef["_snap"] = snap_flags
             gdef["_smooth_v"] = smoother_v
             gdef["_smooth_a"] = smoother_a
+        # build servo limit arrays from servo_channels (sorted by pca_ch)
+        servo_list = sorted(gs.get("servo_channels", {}).items(),
+                            key=lambda x: x[1].get("pca_ch", 0))
+        global SERVO_MIN_US, SERVO_MAX_US
+        if servo_list:
+            SERVO_MIN_US = [s[1].get("min_us", 500) for s in servo_list[:NUM_SERVOS]]
+            SERVO_MAX_US = [s[1].get("max_us", 2500) for s in servo_list[:NUM_SERVOS]]
+            # pad if fewer than NUM_SERVOS
+            while len(SERVO_MIN_US) < NUM_SERVOS: SERVO_MIN_US.append(500)
+            while len(SERVO_MAX_US) < NUM_SERVOS: SERVO_MAX_US.append(2500)
         print(f"[DSP] gestures.json: {list(gestures.keys())}", flush=True)
+        print(f"[DSP] servo limits: min={SERVO_MIN_US} max={SERVO_MAX_US}", flush=True)
         return gestures, emg_ch, conf_cfg, hyst_cfg
     except Exception as e:
         print(f"[DSP] gestures.json load failed: {e}, using defaults", flush=True)
@@ -135,8 +146,8 @@ def load_velocity_map(operator="default"):
 
 def load_runtime(path=None):
     """Load hardware tuning from runtime.json.
-    Returns (hysteresis_votes, grip_firm_us)."""
-    votes = 3
+    Returns grip_firm_us."""
+
     grip_firm = 1100
     candidates = [path] if path else [INSTALLED_CFG, RUNTIME_PATH]
     for p in candidates:
@@ -149,17 +160,15 @@ def load_runtime(path=None):
             text = re.sub(r'//[^\n]*', '', text)
             text = re.sub(r',(\s*[}\]])', r'\1', text)
             raw = json.loads(text)
-            if "hysteresis_votes" in raw:
-                votes = int(raw["hysteresis_votes"])
             if "grip_firm_us" in raw:
                 v = int(raw["grip_firm_us"])
                 if 800 <= v <= 2200:
                     grip_firm = v
-            print(f"[DSP] runtime: votes={votes} grip_firm={grip_firm}", flush=True)
-            return votes, grip_firm
+            print(f"[DSP] runtime: grip_firm={grip_firm}", flush=True)
+            return grip_firm
         except Exception as e:
             print(f"[DSP] runtime {p}: {e}", flush=True)
-    return votes, grip_firm
+    return grip_firm
 
 
 def discover_model():
@@ -288,7 +297,7 @@ def run_inference(verbose=False, operator="default"):
     # ── load config ──
     gestures, active_channels, conf_cfg, hyst_cfg = load_gestures()
     num_ch = len(active_channels)
-    _, grip_firm = load_runtime()
+    grip_firm = load_runtime()
     hyst_r2a = hyst_cfg.get("rest_to_active", 4)
     hyst_a2r = hyst_cfg.get("active_to_rest", 2)
     hyst_a2a = hyst_cfg.get("active_to_active", 6)

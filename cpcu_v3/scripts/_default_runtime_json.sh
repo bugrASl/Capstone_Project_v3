@@ -45,8 +45,6 @@ emit_default_runtime_json() {
     "interp_conf_floor_pct": 40,
     "// interp_conf_ceil_pct": "SVM confidence ceiling above which class commits (0-100).",
     "interp_conf_ceil_pct": 85,
-    "// hysteresis_votes": "Number of consecutive votes needed for class commit.",
-    "hysteresis_votes": 3,
     "// grip_firm_us": "Soft-grip firm-hold pulse width.",
     "grip_firm_us": 1100,
     "// grip_touch_us": "Soft-grip touch pulse width.",

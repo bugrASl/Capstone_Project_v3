@@ -56,7 +56,6 @@ static char *write_runtime_json(void)
         "  \"smooth_deadband_us\":       [10, 10, 10, 10, 10, 10],\n"
         "  \"interp_conf_floor_pct\": 40,\n"
         "  \"interp_conf_ceil_pct\":  85,\n"
-        "  \"hysteresis_votes\": 3,\n"
         "  \"grip_open_us\":  1700,\n"
         "  \"grip_touch_us\": 1200,\n"
         "  \"grip_firm_us\":  1100,\n"

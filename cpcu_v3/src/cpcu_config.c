@@ -57,7 +57,7 @@ void CFG_Defaults(IPC_RuntimeConfig *out)
 
     out->interp_conf_floor_pct  = 40;       /* 0.40 */
     out->interp_conf_ceil_pct   = 85;       /* 0.85 */
-    out->hysteresis_votes       = 3;
+    /* v3: hysteresis moved to gestures.json */
     out->grip_open_us           = 1700;
     out->grip_touch_us          = 1200;
     out->grip_firm_us           = 1100;
@@ -406,8 +406,6 @@ CFG_Status CFG_LoadFromFile(const char *path, IPC_RuntimeConfig *out,
         free(buf);
         return CFG_ERR_RANGE;
     }
-    if(read_uint(j, "hysteresis_votes", &tmp, 1, 20))
-        out->hysteresis_votes = (uint8_t)tmp;
 
     if(read_uint(j, "grip_open_us",  &tmp, 800, 2200))
         out->grip_open_us  = (uint16_t)tmp;

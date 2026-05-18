@@ -26,7 +26,7 @@ What this test covers:
        the full pipeline returns (cleaned, env, features) with the
        right shapes.
     7. gestures.json — valid structure, rest exists, servo refs valid.
-    8. Constants — INPUT_FS_HZ=2000, TARGET_FS_HZ=200, DECIMATE_FACTOR=10,
+    8. Constants — INPUT_FS_HZ=1000, TARGET_FS_HZ=200, DECIMATE_FACTOR=5,
        WINDOW_HI=400, NUM_SERVOS=6.
 
 History:
@@ -317,13 +317,13 @@ def test_constants():
     from cpcu_dsp import (INPUT_FS_HZ, TARGET_FS_HZ, DECIMATE_FACTOR,
                           WINDOW_HI, WINDOW_LO, NUM_SERVOS)
 
-    ASSERT(INPUT_FS_HZ == 2000,
-           f"INPUT_FS_HZ = {INPUT_FS_HZ} (must match BSAU 2 kHz scan rate)")
+    ASSERT(INPUT_FS_HZ == 1000,
+           f"INPUT_FS_HZ = {INPUT_FS_HZ} (must match BSAU 1 kHz packet rate)")
     ASSERT(TARGET_FS_HZ == 200,
            f"TARGET_FS_HZ = {TARGET_FS_HZ} (must match training rate)")
     ASSERT(DECIMATE_FACTOR == INPUT_FS_HZ // TARGET_FS_HZ,
            f"DECIMATE_FACTOR = {DECIMATE_FACTOR} (= INPUT/TARGET)")
-    ASSERT(WINDOW_HI == 400,
+    ASSERT(WINDOW_HI == 200,
            f"WINDOW_HI = {WINDOW_HI} (= 200ms @ 2kHz)")
     ASSERT(WINDOW_LO == 40,
            f"WINDOW_LO = {WINDOW_LO} (= 200ms @ 200Hz)")

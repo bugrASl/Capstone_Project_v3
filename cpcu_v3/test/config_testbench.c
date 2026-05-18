@@ -47,7 +47,6 @@ static void test_valid_full(void)
         "  \"smooth_deadband_us\":       [10,10,10,10,10,10],\n"
         "  \"interp_conf_floor_pct\": 40,\n"
         "  \"interp_conf_ceil_pct\":  85,\n"
-        "  \"hysteresis_votes\": 3,\n"
         "  \"grip_open_us\":   1700,\n"
         "  \"grip_touch_us\":  1200,\n"
         "  \"grip_firm_us\":   1100,\n"
@@ -188,7 +187,6 @@ static void test_optional_present(void)
         "  \"schema_version\": 1,\n"
         "  \"servo_min_us\": [498, 1074, 1074, 1001, 1001, 976],\n"
         "  \"servo_max_us\": [2500, 1953, 1953, 2002, 2002, 1733],\n"
-        "  \"hysteresis_votes\": 5,\n"
         "  \"grip_firm_us\": 1050,\n"
         "  \"servo_bias_us\": [0, 8, -2, 0, 0, 0]\n"
         "}\n";
@@ -198,8 +196,6 @@ static void test_optional_present(void)
     CFG_Status st = CFG_LoadFromFile(path, &cfg, err, sizeof(err));
     CHECK("TB-CFG07a", "optional present -> CFG_OK",
           st == CFG_OK, "got %s (err=%s)", CFG_StatusStr(st), err);
-    CHECK("TB-CFG07b", "hysteresis_votes=5",
-          cfg.hysteresis_votes == 5, "got %u", cfg.hysteresis_votes);
     CHECK("TB-CFG07c", "grip_firm_us=1050",
           cfg.grip_firm_us == 1050, "got %u", cfg.grip_firm_us);
     CHECK("TB-CFG07d", "bias[1]=8",
@@ -226,8 +222,6 @@ static void test_optional_absent(void)
           st == CFG_OK, "got %s (err=%s)", CFG_StatusStr(st), err);
     CHECK("TB-CFG08b", "default deadband applied",
           cfg.smooth_deadband_us[0] == 10, "got %u", cfg.smooth_deadband_us[0]);
-    CHECK("TB-CFG08c", "default hysteresis_votes=3",
-          cfg.hysteresis_votes == 3, "got %u", cfg.hysteresis_votes);
     CHECK("TB-CFG08d", "default grip_firm_us=1100",
           cfg.grip_firm_us == 1100, "got %u", cfg.grip_firm_us);
     unlink(path);

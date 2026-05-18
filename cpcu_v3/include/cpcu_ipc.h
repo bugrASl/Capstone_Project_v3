@@ -65,7 +65,7 @@ typedef struct __attribute__((aligned(64)))
      * reserve below. The TUI is the sole writer of request/request_us;
      * cpcu_io is the sole writer of active. cpcu_dsp.py reads request,
      * never writes.
-     * See cpcu_v2/docs/EDIT_MODE.md for the full handshake protocol. */
+     * See docs/EDIT_MODE.md for the full handshake protocol. */
     _Atomic uint8_t     edit_mode_request;
     _Atomic uint8_t     edit_mode_active;
     _Atomic uint8_t     edit_mode_dsp_ack;          /* dsp acks it saw the request */
@@ -190,7 +190,7 @@ _Static_assert( sizeof(IPC_DSPExport) == 256, "IPC_DSPExport must be 256 bytes (
 
 /*============= RUNTIME CONFIG ================================================*/
 /*
- *  cpcu_kernel reads cpcu_v2/config/runtime.json at startup and on
+ *  cpcu_kernel reads config/runtime.json at startup and on
  *  SIGHUP, populating this region. Other processes (cpcu_io, cpcu_dsp.py
  *  via Python's mmap) read it directly. Writes are seqlock-style: kernel
  *  bumps config_seq, writes, bumps again. Readers retry on torn reads.
@@ -199,7 +199,7 @@ _Static_assert( sizeof(IPC_DSPExport) == 256, "IPC_DSPExport must be 256 bytes (
  *  with `struct` predictably. Pad to a fixed total to keep the IPC
  *  layout deterministic across schema additions across schema additions.
  *
- *  See cpcu_v2/docs/RUNTIME_CONFIG.md for the full schema and the
+ *  See docs/RUNTIME_CONFIG.md for the full schema and the
  *  consumer wiring.
  */
 
@@ -243,7 +243,7 @@ typedef struct __attribute__((aligned(64)))
     /* DSP/AI thresholds */
     uint8_t             interp_conf_floor_pct;              /* 0-100, default 40 */
     uint8_t             interp_conf_ceil_pct;               /* 0-100, default 85 */
-    uint8_t             hysteresis_votes;                   /* default 3 */
+    uint8_t             _reserved_hyst;                     /* v3: moved to gestures.json */
     uint8_t             _pad_dsp;
     uint16_t            grip_open_us;                       /* default 1700 */
     uint16_t            grip_touch_us;                      /* default 1200 */

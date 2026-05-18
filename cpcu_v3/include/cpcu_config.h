@@ -64,7 +64,7 @@ const char *CFG_StatusStr(CFG_Status s);
  *      If absent, returns CFG_ERR_MISSING.
  *    - Comment-keys ('// foo': '...') are preserved verbatim.
  *
- *  See cpcu_v2/docs/RUNTIME_CONFIG.md §10 for the round-trip workflow.
+ *  See docs/RUNTIME_CONFIG.md §10 for the round-trip workflow.
  */
 
 typedef struct {

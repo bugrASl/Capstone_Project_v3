@@ -53,13 +53,25 @@
     },
 
     "audio_events": {
-        "system_start":    { "voice": "voice_system_start",    "freq_hz": 880, "freq_ms": 200 },
-        "system_stop":     { "voice": "voice_system_stop",     "freq_hz": 220, "freq_ms": 300 },
-        "safe_state":      { "voice": "voice_safe_state",      "freq_hz": 200, "freq_ms": 500 },
-        "link_lost":       { "voice": "voice_link_lost",       "freq_hz": 300, "freq_ms": 400 },
-        "link_recovered":  { "voice": "voice_link_recovered",  "freq_hz": 600, "freq_ms": 150 },
-        "low_battery":     { "voice": "voice_low_battery",     "freq_hz": 250, "freq_ms": 600 },
-        "calibration_done":{ "voice": "voice_calibration_done","freq_hz": 700, "freq_ms": 100 }
+        "_comment": "priority: 1=gesture (highest), 2=failure, 3=system",
+
+        "system_ready":       { "priority": 3, "voice": "voice_system_ready",      "freq_hz": 880, "freq_ms": 200 },
+        "system_shutdown":    { "priority": 3, "voice": "voice_system_shutdown",   "freq_hz": 220, "freq_ms": 300 },
+        "io_ready":           { "priority": 3, "voice": "voice_io_ready",          "freq_hz": 600, "freq_ms": 100 },
+        "dsp_ready":          { "priority": 3, "voice": "voice_dsp_ready",         "freq_hz": 700, "freq_ms": 100 },
+        "model_loaded":       { "priority": 3, "voice": "voice_model_loaded",      "freq_hz": 750, "freq_ms": 120 },
+        "config_reloaded":    { "priority": 3, "voice": "voice_config_reloaded",   "freq_hz": 500, "freq_ms": 100 },
+        "calibration_done":   { "priority": 3, "voice": "voice_calibration_done",  "freq_hz": 800, "freq_ms": 100 },
+        "audio_started":      { "priority": 3, "voice": "voice_audio_started",     "freq_hz": 660, "freq_ms": 80  },
+
+        "safe_state_entered": { "priority": 2, "voice": "voice_safe_state",        "freq_hz": 200, "freq_ms": 500 },
+        "safe_state_cleared": { "priority": 2, "voice": "voice_safe_cleared",      "freq_hz": 600, "freq_ms": 150 },
+        "link_lost":          { "priority": 2, "voice": "voice_link_lost",         "freq_hz": 300, "freq_ms": 400 },
+        "link_recovered":     { "priority": 2, "voice": "voice_link_recovered",    "freq_hz": 600, "freq_ms": 150 },
+        "ring_overflow":      { "priority": 2, "voice": "voice_ring_overflow",     "freq_hz": 250, "freq_ms": 300 },
+        "i2c_failure":        { "priority": 2, "voice": "voice_i2c_failure",       "freq_hz": 280, "freq_ms": 350 },
+        "dsp_stall":          { "priority": 2, "voice": "voice_dsp_stall",         "freq_hz": 260, "freq_ms": 400 },
+        "thermal_warning":    { "priority": 2, "voice": "voice_thermal_warning",   "freq_hz": 240, "freq_ms": 500 }
     },
 
     "confidence": {

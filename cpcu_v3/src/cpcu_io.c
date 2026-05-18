@@ -121,6 +121,7 @@
 #include <sys/mman.h>
 #include <linux/gpio.h>
 #include <sys/ioctl.h>
+#include <termios.h>
 
 #include "nrf24l01_linux.h"
 #include "wireless_packet.h"
@@ -270,6 +271,32 @@ int main(int argc, char *argv[])
         close(gpio_fd);
         Log_CloseFiles();
         return 1;
+    }
+
+    /* UART raw sample streaming (1kHz, optional)
+     * Enable with env CPCU_UART_DEBUG=/dev/ttyAMA0 */
+    int uart_fd = -1;
+    {
+        const char *uart_path = getenv("CPCU_UART_DEBUG");
+        if(uart_path && uart_path[0])
+        {
+            uart_fd = open(uart_path, O_WRONLY | O_NOCTTY | O_NONBLOCK);
+            if(uart_fd >= 0)
+            {
+                struct termios t;
+                tcgetattr(uart_fd, &t);
+                cfsetospeed(&t, B115200);
+                t.c_cflag = CS8 | CLOCAL | CREAD;
+                t.c_oflag = 0;
+                t.c_lflag = 0;
+                tcsetattr(uart_fd, TCSANOW, &t);
+                LOG_I("IO", "UART debug → %s @ 115200", uart_path);
+            }
+            else
+            {
+                LOG_W("IO", "UART open(%s) failed: %s", uart_path, strerror(errno));
+            }
+        }
     }
 
     /*  Init NRF with retry */
@@ -441,6 +468,18 @@ int main(int argc, char *argv[])
                     safety.battery.critical = false;
                 IPC_PushSensor(&ipc, &pkt, t);
                 atomic_fetch_add(&ipc.diag->io_pkts_received, 1);
+
+                /* UART raw streaming: seq,ch0,ch1,...,ch7 at 1kHz */
+                if(uart_fd >= 0)
+                {
+                    char ubuf[128];
+                    int ulen = snprintf(ubuf, sizeof(ubuf),
+                        "%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+                        pkt.seq,
+                        pkt.ch[0][0], pkt.ch[1][0], pkt.ch[2][0], pkt.ch[3][0],
+                        pkt.ch[4][0], pkt.ch[5][0], pkt.ch[6][0], pkt.ch[7][0]);
+                    write(uart_fd, ubuf, ulen);
+                }
             }
 
             /* Belt-and-braces: clear RX_DR (bit 6) if it's still asserted.
@@ -864,6 +903,7 @@ int main(int argc, char *argv[])
         NRF_Close(&nrf);
     }
 
+    if(uart_fd >= 0) close(uart_fd);
     IPC_Close(&ipc);
     close(gpio_fd);
     Log_CloseFiles();

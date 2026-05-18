@@ -132,7 +132,6 @@ python3 -c "
 import json, sys
 with open('${RT}') as f: g = json.load(f)
 required = ['servo_min_us','servo_max_us','smooth_velocity_us_per_s',
-            'smooth_accel_us_per_s2','grip_firm_us','hysteresis_votes']
 for k in required:
     assert k in g, f'missing {k}'
 # no legacy comment fields

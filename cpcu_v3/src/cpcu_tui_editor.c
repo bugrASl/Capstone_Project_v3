@@ -51,7 +51,6 @@ static ED_Field g_ed_fields[] = {
     /* DSP THRESHOLDS (scalar) */
     { "interp_conf_floor_pct", "interp_floor_pct",  "%",  ED_KIND_U8, 1, 0,  100, {0}, {0}, {0} },
     { "interp_conf_ceil_pct",  "interp_ceil_pct",   "%",  ED_KIND_U8, 1, 0,  100, {0}, {0}, {0} },
-    { "hysteresis_votes",      "hysteresis_votes",  "",   ED_KIND_U8, 1, 1,   20, {0}, {0}, {0} },
     /* GRIP LEVELS (scalar) */
     { "grip_open_us",          "grip_open_us",         "us", ED_KIND_U16, 1, 800,  2200,  {0}, {0}, {0} },
     { "grip_touch_us",         "grip_touch_us",        "us", ED_KIND_U16, 1, 800,  2200,  {0}, {0}, {0} },
@@ -115,8 +114,6 @@ static void ed_field_load_from_cfg(ED_Field *f, const IPC_RuntimeConfig *cfg)
         f->disk[0] = cfg->interp_conf_floor_pct;
     else if(strcmp(f->json_key, "interp_conf_ceil_pct") == 0)
         f->disk[0] = cfg->interp_conf_ceil_pct;
-    else if(strcmp(f->json_key, "hysteresis_votes") == 0)
-        f->disk[0] = cfg->hysteresis_votes;
     else if(strcmp(f->json_key, "grip_open_us") == 0)
         f->disk[0] = cfg->grip_open_us;
     else if(strcmp(f->json_key, "grip_touch_us") == 0)

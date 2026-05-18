@@ -31,7 +31,7 @@
 #    or use the CPCU TUI's edit mode.
 #
 #  v2.7 changes:
-#    - Moved from cpcu_v2/configure.sh to scripts/configure.sh.
+#    - Moved from scripts/configure.sh to scripts/configure.sh.
 #    - CPCU_ROOT path resolution climbs one directory (we live in
 #      scripts/ now, not at the repo root).
 #    - All "next steps" prose stripped — the launcher prints user-facing
@@ -41,7 +41,7 @@
 set -e
 
 #------------------------------------------------------------------------------
-# Locate the cpcu_v2/ root and the repo parent. Robust against being invoked
+# Locate the project root and the repo parent. Robust against being invoked
 # from anywhere thanks to BASH_SOURCE.
 #------------------------------------------------------------------------------
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"

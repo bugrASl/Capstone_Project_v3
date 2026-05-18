@@ -60,10 +60,10 @@
 ##      ./launch.sh version                Show version
 ##
 ##  v2.7 architectural changes:
-##      - launch.sh moved from cpcu_v2/scripts/launch.sh to cpcu_v2/launch.sh.
-##      - cpcu_v2/scripts/ now contains internal shell helpers only
+##      - launch.sh moved to project root (was scripts/launch.sh).
+##      - scripts/ contains internal shell helpers only
 ##        (setup_pi.sh, configure.sh, run_tests.sh).
-##      - cpcu_v2/python/ contains Python modules (cpcu_dsp.py, etc).
+##      - python/ contains Python modules (cpcu_dsp.py, etc).
 ##      - launch.sh exposes ALL helper functionality. Users never invoke
 ##        the helpers directly.
 ##
@@ -81,7 +81,7 @@
 set -e
 
 # ─── Self-locate ─────────────────────────────────────────────────────
-# launch.sh lives at cpcu_v2/launch.sh. Find ourselves robustly so the
+# launch.sh lives at the project root. Find ourselves robustly so the
 # script works regardless of cwd or symlinks.
 LAUNCH_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
 CPCU_ROOT="$(dirname "${LAUNCH_SCRIPT}")"
@@ -120,7 +120,7 @@ err()   { echo -e "${C_RED}[LAUNCH] ERROR:${C_RST} $*" >&2; }
 fatal() { err "$*"; exit 1; }
 ok()    { echo -e "${C_GRN}[LAUNCH] OK:${C_RST} $*"; }
 
-# Per-process log path: cpcu_v2/log/log_{process}_{mode}_{timestamp}.txt
+# Per-process log path: log/log_{process}_{mode}_{timestamp}.txt
 make_log_path() {
     local proc_name="$1"
     mkdir -p "${LOG_DIR}" 2>/dev/null || true
