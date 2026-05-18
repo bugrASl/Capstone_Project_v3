@@ -163,6 +163,48 @@ static void build_state_frame(void)
         jw_kv_u32(&jw, "dsp_max_latency_us",atomic_load(&g_ipc.diag->dsp_max_latency_us));
     jw_obj_end(&jw);
 
+    /* --- servo positions from motor command --- */
+    {
+        uint16_t srv[IPC_NUM_SERVOS];
+        uint8_t gid = 0, cpct = 0;
+        IPC_ReadMotorCmd(&g_ipc, srv, &gid, &cpct);
+        jw_kv_obj_begin(&jw, "motor");
+            jw_kv_arr_begin(&jw, "servo_us");
+                for(int i = 0; i < IPC_NUM_SERVOS; i++)
+                    jw_arr_int(&jw, (long long)srv[i]);
+            jw_arr_end(&jw);
+            jw_kv_int(&jw, "gesture_id", (long long)gid);
+            jw_kv_int(&jw, "confidence_pct", (long long)cpct);
+        jw_obj_end(&jw);
+    }
+
+    /* --- hysteresis + latency from DSP export padding --- */
+    {
+        uint8_t *exp = (uint8_t *)g_ipc.dsp_export;
+        uint8_t hc = exp[100 + 16];  /* EXPORT_HYST_CONSEC at offset 116 */
+        uint8_t hn = exp[100 + 17];  /* EXPORT_HYST_NEEDED */
+        uint8_t ht = exp[100 + 18];  /* EXPORT_HYST_TYPE */
+        jw_kv_obj_begin(&jw, "hysteresis");
+            jw_kv_int(&jw, "consec", (long long)hc);
+            jw_kv_int(&jw, "needed", (long long)hn);
+            jw_kv_int(&jw, "type",   (long long)ht);
+            jw_kv_str(&jw, "type_name",
+                ht == 0 ? "rest_to_active" :
+                ht == 1 ? "active_to_rest" :
+                ht == 2 ? "active_to_active" : "idle");
+        jw_obj_end(&jw);
+
+        uint32_t pkt_lat, seq_age, dsp_us;
+        memcpy(&pkt_lat, exp + 100, 4);
+        memcpy(&seq_age, exp + 104, 4);
+        memcpy(&dsp_us,  exp + 112, 4);
+        jw_kv_obj_begin(&jw, "latency");
+            jw_kv_u32(&jw, "pkt_to_servo_us", pkt_lat);
+            jw_kv_u32(&jw, "seq_age",         seq_age);
+            jw_kv_u32(&jw, "dsp_compute_us",  dsp_us);
+        jw_obj_end(&jw);
+    }
+
     /* --- Tools — IPC_ToolPresence registry. Each slot a tool
      *     might be alive in. We emit only alive slots, with a freshness
      *     check on the heartbeat (>2 s old → treat as dead). The tool's

@@ -490,13 +490,24 @@ def main():
         print(f"  Estimated E2E  : {metrics['max_latency_ms']:.0f} ms "
               f"(200 obs + {metrics['_max_infer_ms']:.0f} inf + 20 servo)")
     print()
-    print(f"  Processing (per window):")
-    print(f"    DSP + ML   : {metrics['_max_infer_ms']:8.1f} ms max")
-    print(f"    DSP + ML   : {metrics['inference_p50_ms']:8.1f} ms P50")
-    print(f"  Algorithmic (design parameters):")
-    print(f"    Window     :      200 ms (fixed, 400 samples @ 2kHz)")
-    print(f"    Stride wait:    ~25.0 ms (avg, 0-50 ms uniform)")
-    print(f"    Hysteresis :   variable (rest→active: 400ms, a→a: 600ms)")
+    print(f"  ┌─ BSAU (constants from datasheets)")
+    print(f"  │ ADC + pack:          226 µs")
+    print(f"  │ wireless TX+ACK:     332 µs")
+    print(f"  ├─ CPCU (measured)")
+    print(f"  │ SPI + unpack:         36 µs")
+    print(f"  │ DSP + ML:    {metrics['_max_infer_ms']:8.1f} ms max, {metrics['inference_p50_ms']:.1f} ms P50")
+    print(f"  │ smoother+I²C:        610 µs")
+    print(f"  ├─ Servo")
+    print(f"  │ mechanical:        ~15.0 ms")
+    print(f"  ├─ Algorithmic (design parameters)")
+    print(f"  │ window:            200.0 ms (200 samples @ 1kHz)")
+    print(f"  │ stride wait:       ~50.0 ms (avg, 0-100ms)")
+    print(f"  │ hysteresis:       variable (r→a:400ms, a→r:200ms, a→a:600ms)")
+    print(f"  └─ Totals")
+    cpcu_ms = metrics['pkt_e2e_avg_ms'] if metrics['pkt_e2e_avg_ms'] > 0 else 0
+    bsau_ms = 0.594 + cpcu_ms + 0.610 + 15.0
+    print(f"    CPCU pkt→servo:  {cpcu_ms:8.1f} ms (measured)")
+    print(f"    BSAU→servo:      {bsau_ms:8.1f} ms (full E2E)")
     print("  " + "─" * 55)
 
     if total_fail == 0:

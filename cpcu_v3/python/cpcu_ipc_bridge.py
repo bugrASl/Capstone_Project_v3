@@ -151,6 +151,10 @@ EXPORT_PKT_LATENCY      =   100         # uint32: packet rx → servo write (µs
 EXPORT_SEQ_AGE          =   104         # uint32: oldest seq age in window
 EXPORT_RING_DWELL       =   108         # uint32: ring dwell time (µs)
 EXPORT_DSP_US           =   112         # uint32: DSP compute time (µs)
+# v3: hysteresis state (bytes 116-123)
+EXPORT_HYST_CONSEC      =   116         # uint8: current consecutive count
+EXPORT_HYST_NEEDED      =   117         # uint8: threshold needed for transition
+EXPORT_HYST_TYPE        =   118         # uint8: 0=r2a, 1=a2r, 2=a2a, 3=none
 
 # ══════════════════════════════════════════════════════════════════════
 #  FIELD OFFSETS within IPC_DspFiltered
@@ -557,6 +561,20 @@ class IPCBridge:
         self._w32(b + EXPORT_SEQ_AGE, int(seq_age) & 0xFFFFFFFF)
         self._w32(b + EXPORT_RING_DWELL, int(ring_dwell_us) & 0xFFFFFFFF)
         self._w32(b + EXPORT_DSP_US, int(dsp_compute_us) & 0xFFFFFFFF)
+
+    def write_hysteresis_state(self, consec, needed, htype):
+        b = OFF_EXPORT
+        self.mm[b + EXPORT_HYST_CONSEC] = min(255, int(consec))
+        self.mm[b + EXPORT_HYST_NEEDED] = min(255, int(needed))
+        self.mm[b + EXPORT_HYST_TYPE] = min(255, int(htype))
+
+    def read_hysteresis_state(self):
+        b = OFF_EXPORT
+        return {
+            'consec': self.mm[b + EXPORT_HYST_CONSEC],
+            'needed': self.mm[b + EXPORT_HYST_NEEDED],
+            'type': self.mm[b + EXPORT_HYST_TYPE],
+        }
 
     def read_latency_pkt(self):
         """Read packet-based latency from DSP export padding."""

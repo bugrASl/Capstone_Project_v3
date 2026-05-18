@@ -55,6 +55,14 @@ DRAIN_PERIOD_S  = 0.020
 DRAIN_BATCH     = 200
 PROB_THRESH     = 0.65
 
+# hardware latency constants (from datasheets, not measured)
+LAT_ADC_PACK_US     = 226   # STM32 ADC 6ch×2kHz + firmware pack
+LAT_WIRELESS_US     = 332   # NRF24L01+ ESB: SPI upload + air + ACK
+LAT_SPI_UNPACK_US   = 36    # CPCU NRF SPI read + WL_Unpack + IPC push
+LAT_SMOOTHER_I2C_US = 610   # SMOOTH_Update + PCA9685 I²C 6 servos
+LAT_SERVO_MECH_US   = 15000 # SG90 mechanical response (~15ms typical)
+LAT_TRANSPORT_US    = LAT_ADC_PACK_US + LAT_WIRELESS_US + LAT_SPI_UNPACK_US  # 594µs
+
 SERVO_MIN_US    = [498, 1074, 1074, 1001, 1001, 976]
 SERVO_MAX_US    = [2500, 1953, 1953, 2002, 2002, 1733]
 
@@ -454,16 +462,22 @@ def run_inference(verbose=False, operator="default"):
                     # asymmetric hysteresis: different vote counts per transition
                     if current_state == "rest":
                         needed = hyst_r2a
+                        htype_id = 0  # rest→active
                     elif label == "rest":
                         needed = hyst_a2r
+                        htype_id = 1  # active→rest
                     else:
                         needed = hyst_a2a
+                        htype_id = 2  # active→active
                     consec_count += 1
                     if consec_count >= needed:
                         current_state = label
                         consec_count = 0
+                    # publish hysteresis state
+                    ipc.write_hysteresis_state(consec_count, needed, htype_id)
                 else:
                     consec_count = 0
+                    ipc.write_hysteresis_state(0, 0, 3)  # 3=idle
 
                 last_active = ai
                 class_conf = list(probs)
@@ -578,29 +592,37 @@ def run_inference(verbose=False, operator="default"):
 
         # ── 8. periodic report (every 5s) ──
         if t0 - last_report >= 5.0:
-            print(f"[DSP] ── latency report ──────────────────────", flush=True)
-            print(f"[DSP]   state={current_state}  inf={inferences}  "
-                  f"ring={ipc.sensor_count()}", flush=True)
+            print(f"[DSP] ── latency waterfall ───────────────────", flush=True)
+            print(f"[DSP]   state={current_state}  inf={inferences}", flush=True)
+            print(f"[DSP]   ┌─ BSAU ─────────────────────────────", flush=True)
+            print(f"[DSP]   │ ADC + pack:      {LAT_ADC_PACK_US:>6} µs  (const)", flush=True)
+            print(f"[DSP]   │ wireless TX+ACK: {LAT_WIRELESS_US:>6} µs  (const)", flush=True)
+            print(f"[DSP]   ├─ CPCU ─────────────────────────────", flush=True)
+            print(f"[DSP]   │ SPI + unpack:    {LAT_SPI_UNPACK_US:>6} µs  (const)", flush=True)
+            if lat_drain_samples:
+                dravg = sum(lat_drain_samples) / len(lat_drain_samples)
+                print(f"[DSP]   │ ring dwell:    {dravg*1000:>8.0f} µs  (meas)", flush=True)
+            if lat_dsp_samples:
+                davg = sum(lat_dsp_samples) / len(lat_dsp_samples)
+                dmax = max(lat_dsp_samples)
+                print(f"[DSP]   │ DSP compute:   {davg*1000:>8.0f} µs  (meas, max {dmax*1000:.0f})", flush=True)
+            print(f"[DSP]   │ smoother+I²C:   {LAT_SMOOTHER_I2C_US:>6} µs  (const)", flush=True)
+            print(f"[DSP]   ├─ SERVO ────────────────────────────", flush=True)
+            print(f"[DSP]   │ mechanical:    {LAT_SERVO_MECH_US:>8} µs  (const)", flush=True)
+            print(f"[DSP]   └─ TOTALS ───────────────────────────", flush=True)
             if lat_pkt_samples:
                 s = sorted(lat_pkt_samples)
                 avg = sum(s) / len(s)
                 p95 = s[int(len(s) * 0.95)] if len(s) > 1 else s[0]
-                print(f"[DSP]   pkt→servo: avg={avg:.1f}ms  "
-                      f"min={s[0]:.1f}ms  p95={p95:.1f}ms  "
-                      f"max={s[-1]:.1f}ms  ({len(s)} samples)", flush=True)
+                cpcu_avg = avg * 1000  # µs
+                bsau_total = LAT_TRANSPORT_US + cpcu_avg + LAT_SMOOTHER_I2C_US + LAT_SERVO_MECH_US
+                print(f"[DSP]   │ CPCU pkt→srv:  {cpcu_avg:>8.0f} µs  avg ({avg:.1f}ms)", flush=True)
+                print(f"[DSP]   │                {p95*1000:>8.0f} µs  p95 ({p95:.1f}ms)", flush=True)
+                print(f"[DSP]   │ BSAU→servo:   {bsau_total:>8.0f} µs  ({bsau_total/1000:.1f}ms)", flush=True)
             if lat_seq_samples:
                 avg_seq = sum(lat_seq_samples) / len(lat_seq_samples)
-                print(f"[DSP]   seq age:   avg={avg_seq:.0f} pkts "
-                      f"({avg_seq:.0f}ms @1kHz)", flush=True)
-            if lat_dsp_samples:
-                davg = sum(lat_dsp_samples) / len(lat_dsp_samples)
-                dmax = max(lat_dsp_samples)
-                print(f"[DSP]   dsp+ml:    avg={davg:.1f}ms  "
-                      f"max={dmax:.1f}ms", flush=True)
-            if lat_drain_samples:
-                dravg = sum(lat_drain_samples) / len(lat_drain_samples)
-                print(f"[DSP]   ring drain: avg={dravg:.2f}ms", flush=True)
-            print(f"[DSP] ────────────────────────────────────────", flush=True)
+                print(f"[DSP]   │ seq age:     {avg_seq:>8.0f} pkts ({avg_seq:.0f}ms @1kHz)", flush=True)
+            print(f"[DSP] ──────────────────────────────────────", flush=True)
             # reset accumulators
             lat_pkt_samples.clear()
             lat_seq_samples.clear()
