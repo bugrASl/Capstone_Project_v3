@@ -1,6 +1,5 @@
 {
-    "schema_version": 4,
-    "model_path": "models/aleynask.pkl",
+    "schema_version": 5,
 
     "audio_mode": "voice",
     "audio_volume_pct": 80,
@@ -14,41 +13,53 @@
         "Gripper": { "pca_ch": 5, "min_us": 976,  "max_us": 1733, "neutral_us": 1500 }
     },
 
-    "emg_channels": {
-        "active": [0, 1, 2],
-        "names": ["Forearm", "Biceps", "Triceps"]
-    },
-
-    "gestures": {
-        "rest": {
-            "mode": "freeze",
-            "audio": { "voice": "voice_rest", "freq_hz": 330, "freq_ms": 60 }
+    "gesture_groups": {
+        "gesture_0": {
+            "emg_channels": { "active": [0, 1, 2], "names": ["Forearm_R", "Biceps_R", "Triceps_R"] },
+            "model_path": "models/right_arm.pkl",
+            "confidence": { "curve": "quadratic", "floor_pct": 40, "ceil_pct": 85 },
+            "hysteresis": { "rest_to_active": 4, "active_to_rest": 2, "active_to_active": 6 },
+            "gestures": {
+                "rest": {
+                    "mode": "freeze",
+                    "audio": { "voice": "voice_rest", "freq_hz": 330, "freq_ms": 60 }
+                },
+                "flex": {
+                    "mode": "velocity",
+                    "channels": {
+                        "Elbow": { "rate_us_s": 200 }
+                    },
+                    "audio": { "voice": "voice_flex", "freq_hz": 440, "freq_ms": 80 }
+                },
+                "ext": {
+                    "mode": "velocity",
+                    "channels": {
+                        "Elbow": { "rate_us_s": -200 },
+                        "Gripper": { "rate_us_s": 200 }
+                    },
+                    "audio": { "voice": "voice_extend", "freq_hz": 660, "freq_ms": 80 }
+                }
+            }
         },
-        "flex": {
-            "mode": "velocity",
-            "channels": {
-                "Elbow": { "rate_us_s": 200 }
-            },
-            "smoother_override": {
-                "Elbow": { "velocity_us_s": 4000, "accel_us_s2": 3000 }
-            },
-            "audio": { "voice": "voice_flex", "freq_hz": 440, "freq_ms": 80 }
-        },
-        "ext": {
-            "mode": "velocity",
-            "channels": {
-                "Elbow":   { "rate_us_s": -200 },
-                "Gripper": { "rate_us_s": 200 }
-            },
-            "audio": { "voice": "voice_extend", "freq_hz": 660, "freq_ms": 80 }
-        },
-        "hand": {
-            "mode": "velocity",
-            "channels": {
-                "Gripper": { "rate_us_s": -400, "snap": true }
-            },
-            "grip_firm_us": 1080,
-            "audio": { "voice": "voice_grip", "freq_hz": 550, "freq_ms": 50 }
+        "gesture_1": {
+            "emg_channels": { "active": [3, 4, 5], "names": ["Forearm_L", "Biceps_L", "Triceps_L"] },
+            "model_path": "models/left_arm.pkl",
+            "confidence": { "curve": "quadratic", "floor_pct": 40, "ceil_pct": 85 },
+            "hysteresis": { "rest_to_active": 4, "active_to_rest": 2, "active_to_active": 6 },
+            "gestures": {
+                "rest": {
+                    "mode": "freeze",
+                    "audio": { "voice": "voice_rest_l", "freq_hz": 330, "freq_ms": 60 }
+                },
+                "hand": {
+                    "mode": "velocity",
+                    "channels": {
+                        "Gripper": { "rate_us_s": -400, "snap": true }
+                    },
+                    "grip_firm_us": 1080,
+                    "audio": { "voice": "voice_grip", "freq_hz": 550, "freq_ms": 50 }
+                }
+            }
         }
     },
 
@@ -72,17 +83,5 @@
         "i2c_failure":        { "priority": 2, "voice": "voice_i2c_failure",       "freq_hz": 280, "freq_ms": 350 },
         "dsp_stall":          { "priority": 2, "voice": "voice_dsp_stall",         "freq_hz": 260, "freq_ms": 400 },
         "thermal_warning":    { "priority": 2, "voice": "voice_thermal_warning",   "freq_hz": 240, "freq_ms": 500 }
-    },
-
-    "confidence": {
-        "curve": "quadratic",
-        "floor_pct": 40,
-        "ceil_pct": 85
-    },
-
-    "hysteresis": {
-        "rest_to_active": 4,
-        "active_to_rest": 2,
-        "active_to_active": 6
     }
 }

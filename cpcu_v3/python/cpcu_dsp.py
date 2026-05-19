@@ -71,62 +71,109 @@ SERVO_MAX_US    = [2500, 1953, 1953, 2002, 2002, 1733]
 #  CONFIG LOADERS
 # ══════════════════════════════════════════════════════════════════════
 
+def _resolve_gesture_rates(gestures, name_to_idx):
+    """Convert servo name references to index-based rate arrays."""
+    for gname, gdef in gestures.items():
+        raw_ch = gdef.get("channels", {})
+        rates = [0] * NUM_SERVOS
+        snap_flags = [False] * NUM_SERVOS
+        smoother_v = [0] * NUM_SERVOS
+        smoother_a = [0] * NUM_SERVOS
+        for sname, chdef in raw_ch.items():
+            idx = name_to_idx.get(sname)
+            if idx is None:
+                print(f"[DSP] unknown servo '{sname}'", flush=True)
+                continue
+            rates[idx] = chdef.get("rate_us_s", 0)
+            snap_flags[idx] = chdef.get("snap", False)
+            so = gdef.get("smoother_override", {}).get(sname, {})
+            smoother_v[idx] = so.get("velocity_us_s", 0)
+            smoother_a[idx] = so.get("accel_us_s2", 0)
+        gdef["_rates"] = rates
+        gdef["_snap"] = snap_flags
+        gdef["_smooth_v"] = smoother_v
+        gdef["_smooth_a"] = smoother_a
+
+
 def load_gestures(path=GESTURES_PATH):
-    """Load gestures.json. Returns (gestures_dict, emg_channels, confidence_cfg, hysteresis)
-    or defaults on failure."""
-    defaults = (
-        {"rest": {"mode": "freeze", "channels": {}}},
-        [0, 1, 2],
-        {"curve": "quadratic", "floor_pct": 40, "ceil_pct": 85},
-        {"rest_to_active": 4, "active_to_rest": 2, "active_to_active": 6}
-    )
+    """Load gestures.json. Returns (groups_list, servo_channels_dict).
+
+    Each group in groups_list is a dict:
+      { "name": "gesture_0",
+        "gestures": {...},       # with _rates resolved
+        "emg_channels": [0,1,2],
+        "confidence": {...},
+        "hysteresis": {...},
+        "model_path": "models/x.pkl" }
+
+    Supports schema v5 (gesture_groups) and v4 (flat gestures, single group).
+    """
+    default_conf = {"curve": "quadratic", "floor_pct": 40, "ceil_pct": 85}
+    default_hyst = {"rest_to_active": 4, "active_to_rest": 2, "active_to_active": 6}
+    default_group = {
+        "name": "gesture_0",
+        "gestures": {"rest": {"mode": "freeze", "channels": {}}},
+        "emg_channels": [0, 1, 2],
+        "confidence": default_conf,
+        "hysteresis": default_hyst,
+        "model_path": "models/model.pkl",
+    }
     try:
         with open(path) as f:
             gs = json.load(f)
-        gestures = gs.get("gestures", defaults[0])
-        emg_ch   = gs.get("emg_channels", {}).get("active", defaults[1])
-        conf_cfg = gs.get("confidence", defaults[2])
-        hyst_cfg = gs.get("hysteresis", defaults[3])
+
         servo_ch = gs.get("servo_channels", {})
-        # resolve servo channel names to indices
         name_to_idx = {n: d["pca_ch"] for n, d in servo_ch.items()}
-        # convert gesture channel names to index-based rates
-        for gname, gdef in gestures.items():
-            raw_ch = gdef.get("channels", {})
-            rates = [0] * NUM_SERVOS
-            snap_flags = [False] * NUM_SERVOS
-            smoother_v = [0] * NUM_SERVOS
-            smoother_a = [0] * NUM_SERVOS
-            for sname, chdef in raw_ch.items():
-                idx = name_to_idx.get(sname)
-                if idx is None:
-                    print(f"[DSP] gestures.json: unknown servo '{sname}'", flush=True)
-                    continue
-                rates[idx] = chdef.get("rate_us_s", 0)
-                snap_flags[idx] = chdef.get("snap", False)
-                so = gdef.get("smoother_override", {}).get(sname, {})
-                smoother_v[idx] = so.get("velocity_us_s", 0)
-                smoother_a[idx] = so.get("accel_us_s2", 0)
-            gdef["_rates"] = rates
-            gdef["_snap"] = snap_flags
-            gdef["_smooth_v"] = smoother_v
-            gdef["_smooth_a"] = smoother_a
-        # build servo limit arrays from servo_channels (sorted by pca_ch)
-        servo_list = sorted(gs.get("servo_channels", {}).items(),
-                            key=lambda x: x[1].get("pca_ch", 0))
+
+        # build servo limit arrays
+        servo_list = sorted(servo_ch.items(), key=lambda x: x[1].get("pca_ch", 0))
         global SERVO_MIN_US, SERVO_MAX_US
         if servo_list:
             SERVO_MIN_US = [s[1].get("min_us", 500) for s in servo_list[:NUM_SERVOS]]
             SERVO_MAX_US = [s[1].get("max_us", 2500) for s in servo_list[:NUM_SERVOS]]
-            # pad if fewer than NUM_SERVOS
             while len(SERVO_MIN_US) < NUM_SERVOS: SERVO_MIN_US.append(500)
             while len(SERVO_MAX_US) < NUM_SERVOS: SERVO_MAX_US.append(2500)
-        print(f"[DSP] gestures.json: {list(gestures.keys())}", flush=True)
+
+        groups = []
+        gg = gs.get("gesture_groups")
+        if gg:
+            # schema v5: multi-group
+            for gname, gdef in gg.items():
+                gestures = gdef.get("gestures", {"rest": {"mode": "freeze"}})
+                _resolve_gesture_rates(gestures, name_to_idx)
+                groups.append({
+                    "name": gname,
+                    "gestures": gestures,
+                    "emg_channels": gdef.get("emg_channels", {}).get("active", [0,1,2]),
+                    "confidence": gdef.get("confidence", default_conf),
+                    "hysteresis": gdef.get("hysteresis", default_hyst),
+                    "model_path": gdef.get("model_path", ""),
+                })
+        elif "gestures" in gs:
+            # schema v4 backward compat: single group
+            gestures = gs["gestures"]
+            _resolve_gesture_rates(gestures, name_to_idx)
+            groups.append({
+                "name": "gesture_0",
+                "gestures": gestures,
+                "emg_channels": gs.get("emg_channels", {}).get("active", [0,1,2]),
+                "confidence": gs.get("confidence", default_conf),
+                "hysteresis": gs.get("hysteresis", default_hyst),
+                "model_path": gs.get("model_path", ""),
+            })
+
+        if not groups:
+            groups.append(default_group)
+
+        print(f"[DSP] {len(groups)} gesture group(s):", flush=True)
+        for g in groups:
+            print(f"[DSP]   {g['name']}: {list(g['gestures'].keys())} "
+                  f"emg={g['emg_channels']} model={g['model_path']}", flush=True)
         print(f"[DSP] servo limits: min={SERVO_MIN_US} max={SERVO_MAX_US}", flush=True)
-        return gestures, emg_ch, conf_cfg, hyst_cfg
+        return groups, servo_ch
     except Exception as e:
         print(f"[DSP] gestures.json load failed: {e}, using defaults", flush=True)
-        return defaults
+        return [default_group], {}
 
 
 def load_velocity_map(operator="default"):
@@ -179,14 +226,29 @@ def load_runtime(path=None):
     return grip_firm
 
 
-def discover_model():
+def discover_model(model_path=""):
     """Find and load ML model. Returns (model, scaler) or (None, None).
-    Search order: MODEL_DIR/*.pkl, INSTALLED_MODEL/*.pkl."""
+    If model_path is given, try it first. Then MODEL_DIR/*.pkl, INSTALLED_MODEL/*.pkl."""
     try:
         import joblib
     except ImportError:
         print("[DSP] joblib missing — feature-only mode", flush=True)
         return None, None
+
+    # try specific path first
+    if model_path:
+        candidates = [model_path]
+        if not os.path.isabs(model_path):
+            candidates.append(os.path.join(REPO_ROOT, model_path))
+            candidates.append(os.path.join("/opt/cpcu", model_path))
+        for p in candidates:
+            try:
+                cp = joblib.load(p)
+                if isinstance(cp, dict) and "model" in cp and "scaler" in cp:
+                    print(f"[DSP] model: {p}", flush=True)
+                    return cp["model"], cp["scaler"]
+            except Exception:
+                pass
 
     search_dirs = [MODEL_DIR, INSTALLED_MODEL]
     for d in search_dirs:
@@ -368,10 +430,10 @@ def run_inference(verbose=False, operator="default"):
 
     _uart_init()
 
-    # ── state ──
-    buffers = [deque([0]*BUFFER_SIZE, maxlen=BUFFER_SIZE) for _ in range(num_ch)]
-    rx_times = deque([0]*BUFFER_SIZE, maxlen=BUFFER_SIZE)  # Pi rx timestamp per sample
-    seq_history = deque([0]*BUFFER_SIZE, maxlen=BUFFER_SIZE)  # packet seq per sample
+    # ── shared state (all channels) ──
+    raw_buffers = {ch: deque([0]*BUFFER_SIZE, maxlen=BUFFER_SIZE) for ch in all_channels}
+    rx_times = deque([0]*BUFFER_SIZE, maxlen=BUFFER_SIZE)
+    seq_history = deque([0]*BUFFER_SIZE, maxlen=BUFFER_SIZE)
     samples_since_window = 0
     total_samples = 0
     current_state = "rest"
@@ -431,68 +493,78 @@ def run_inference(verbose=False, operator="default"):
             t_dsp_start = time.monotonic()
             samples_since_window = 0
 
-            # ── 3. feature extraction ──
-            features_flat = []
+            # ── 3+4. per-group: feature extraction + inference + debounce ──
             rms_8ch = [0.0] * 8
-            for bi, ch in enumerate(active_channels):
-                w = np.array(list(buffers[bi])[-WINDOW_HI:], dtype=np.float64)
-                _cl, _ev, feats = process_window(w)
-                features_flat.extend(feats)
-                rms_8ch[ch] = feats[0]
-                try:
-                    ipc.write_dsp_filtered_window(ch, _ev,
-                                                  sample_rate_hz=TARGET_FS_HZ)
-                except Exception:
-                    pass
+            primary_state = "rest"
+            primary_conf_pct = 0
+            primary_class_conf = []
+            primary_active = 0
 
-            t_dsp = time.monotonic() - t_dsp_start
+            for gi, gst in enumerate(group_states):
+                features_flat = []
+                for bi, ch in enumerate(gst.emg_channels):
+                    w = np.array(list(gst.buffers[bi])[-WINDOW_HI:], dtype=np.float64)
+                    _cl, _ev, feats = process_window(w)
+                    features_flat.extend(feats)
+                    rms_8ch[ch] = feats[0]
+                    try:
+                        ipc.write_dsp_filtered_window(ch, _ev,
+                                                      sample_rate_hz=TARGET_FS_HZ)
+                    except Exception:
+                        pass
 
-            # ── 4. inference + debounce ──
-            conf_pct = 0
-            class_conf = []
-            if inference_on:
-                X = np.asarray(features_flat, dtype=np.float64).reshape(1, -1)
-                Xs = scaler.transform(X)
-                probs = model.predict_proba(Xs)[0]
-                ai = int(np.argmax(probs))
-                label = str(model.classes_[ai])
-                conf = float(probs[ai])
+                # inference for this group
+                gst.conf_pct = 0
+                gst.class_conf = []
+                if gst.inference_on:
+                    X = np.asarray(features_flat, dtype=np.float64).reshape(1, -1)
+                    Xs = gst.scaler.transform(X)
+                    probs = gst.model.predict_proba(Xs)[0]
+                    ai = int(np.argmax(probs))
+                    label = str(gst.model.classes_[ai])
+                    conf = float(probs[ai])
 
-                if conf > PROB_THRESH and label != current_state:
-                    # asymmetric hysteresis: different vote counts per transition
-                    if current_state == "rest":
-                        needed = hyst_r2a
-                        htype_id = 0  # rest→active
-                    elif label == "rest":
-                        needed = hyst_a2r
-                        htype_id = 1  # active→rest
+                    if conf > PROB_THRESH and label != gst.current_state:
+                        if gst.current_state == "rest":
+                            needed = gst.hyst_r2a
+                            htype_id = 0
+                        elif label == "rest":
+                            needed = gst.hyst_a2r
+                            htype_id = 1
+                        else:
+                            needed = gst.hyst_a2a
+                            htype_id = 2
+                        gst.consec_count += 1
+                        if gst.consec_count >= needed:
+                            gst.current_state = label
+                            gst.consec_count = 0
                     else:
-                        needed = hyst_a2a
-                        htype_id = 2  # active→active
-                    consec_count += 1
-                    if consec_count >= needed:
-                        current_state = label
-                        consec_count = 0
-                    # publish hysteresis state
-                    ipc.write_hysteresis_state(consec_count, needed, htype_id)
-                else:
-                    consec_count = 0
-                    ipc.write_hysteresis_state(0, 0, 3)  # 3=idle
+                        gst.consec_count = 0
 
-                last_active = ai
-                class_conf = list(probs)
-                conf_pct = int(round(conf * 100.0))
+                    gst.last_active = ai
+                    gst.class_conf = list(probs)
+                    gst.conf_pct = int(round(conf * 100.0))
 
-                _uart_send(current_state, conf, features_flat)
+                # first group is "primary" for IPC export
+                if gi == 0:
+                    primary_state = gst.current_state
+                    primary_conf_pct = gst.conf_pct
+                    primary_class_conf = gst.class_conf
+                    primary_active = gst.last_active
+                    ipc.write_hysteresis_state(gst.consec_count,
+                        gst.hyst_r2a if gst.current_state == "rest" else gst.hyst_a2a,
+                        0 if gst.current_state == "rest" else 2)
+
+            _uart_send(primary_state, primary_conf_pct / 100.0, [])
 
             # ── 5. publish dsp export ──
             inf_us = int((time.monotonic() - t_dsp_start) * 1e6)
             ipc.update_dsp_max_latency(inf_us)
             ipc.write_dsp_export(
                 channel_rms=rms_8ch,
-                gesture_name=current_state,
-                class_confidence=class_conf,
-                active_class=last_active,
+                gesture_name=primary_state,
+                class_confidence=primary_class_conf,
+                active_class=primary_active,
                 inference_time_us=inf_us,
             )
 
@@ -500,8 +572,9 @@ def run_inference(verbose=False, operator="default"):
             edit_req = ipc.read_edit_request()
             if edit_req:
                 if not edit_mode:
-                    current_state = "rest"
-                    consec_count = 0
+                    for gst in group_states:
+                        gst.current_state = "rest"
+                        gst.consec_count = 0
                     current_target = [SERVO_NEUTRAL] * NUM_SERVOS
                     ipc.write_edit_dsp_ack(1)
                     edit_mode = True
@@ -516,9 +589,12 @@ def run_inference(verbose=False, operator="default"):
                 in_safe = (sys_state == 2)
                 if in_safe and not last_safe:
                     current_target = [SERVO_NEUTRAL] * NUM_SERVOS
+                    for gst in group_states:
+                        gst.current_state = "rest"
+                        gst.consec_count = 0
                 last_safe = in_safe
 
-                # ── 7. velocity integration ──
+                # ── 7. velocity integration (all groups combined) ──
                 t_vel_start = time.monotonic()
                 now = time.monotonic()
                 dt = now - last_int_t
@@ -526,31 +602,35 @@ def run_inference(verbose=False, operator="default"):
                 if dt > 0.5:
                     dt = 0.0  # stall guard
 
-                conf_frac = conf_pct / 100.0
-                scale = confidence_scale(conf_frac, conf_floor,
-                                         conf_ceil, conf_curve)
-
-                gdef = gestures.get(current_state)
-                if gdef is None:
-                    # unknown class → neutral
+                # each group contributes to current_target independently
+                any_rest_all = all(gst.current_state == "rest" for gst in group_states)
+                if any_rest_all:
                     current_target = [SERVO_NEUTRAL] * NUM_SERVOS
-                elif gdef.get("mode") == "freeze":
-                    if current_state == "rest":
-                        current_target = [SERVO_NEUTRAL] * NUM_SERVOS
                 else:
-                    # velocity mode
-                    rates = gdef.get("_rates", [0]*NUM_SERVOS)
-                    gf = gdef.get("_grip_firm", grip_firm)
-                    for s in range(NUM_SERVOS):
-                        delta = rates[s] * dt * scale
-                        nv = current_target[s] + delta
-                        nv = max(SERVO_MIN_US[s], min(SERVO_MAX_US[s], nv))
-                        if s == 5 and nv < gf:
-                            nv = gf  # gripper soft-firm clamp
-                        current_target[s] = nv
+                    for gst in group_states:
+                        gdef = gst.gestures.get(gst.current_state)
+                        if gdef is None:
+                            continue
+                        if gdef.get("mode") == "freeze":
+                            continue  # freeze = no contribution
+                        # velocity mode
+                        conf_frac = gst.conf_pct / 100.0
+                        scale = confidence_scale(conf_frac, gst.conf_floor,
+                                                 gst.conf_ceil, gst.conf_curve)
+                        rates = gdef.get("_rates", [0]*NUM_SERVOS)
+                        gf = gdef.get("_grip_firm", grip_firm)
+                        for s in range(NUM_SERVOS):
+                            if rates[s] == 0:
+                                continue  # this group doesn't control this servo
+                            delta = rates[s] * dt * scale
+                            nv = current_target[s] + delta
+                            nv = max(SERVO_MIN_US[s], min(SERVO_MAX_US[s], nv))
+                            if s == 5 and nv < gf:
+                                nv = gf
+                            current_target[s] = nv
 
                 servo_us = [int(round(v)) for v in current_target]
-                ipc.write_motor_cmd(servo_us, last_active, conf_pct)
+                ipc.write_motor_cmd(servo_us, primary_active, primary_conf_pct)
                 t_vel = time.monotonic() - t_vel_start
 
             # ── 7b. packet-based latency measurement ──
@@ -593,7 +673,7 @@ def run_inference(verbose=False, operator="default"):
         # ── 8. periodic report (every 5s) ──
         if t0 - last_report >= 5.0:
             print(f"[DSP] ── latency waterfall ───────────────────", flush=True)
-            print(f"[DSP]   state={current_state}  inf={inferences}", flush=True)
+            print(f"[DSP]   groups={[(g.name,g.current_state,g.conf_pct) for g in group_states]}  inf={inferences}", flush=True)
             print(f"[DSP]   ┌─ BSAU ─────────────────────────────", flush=True)
             print(f"[DSP]   │ ADC + pack:      {LAT_ADC_PACK_US:>6} µs  (const)", flush=True)
             print(f"[DSP]   │ wireless TX+ACK: {LAT_WIRELESS_US:>6} µs  (const)", flush=True)
@@ -646,7 +726,8 @@ def run_inference(verbose=False, operator="default"):
 
 def run_calibrate(seconds):
     """Collect rest-state samples, compute 3*std per channel, save thresholds."""
-    _, active_channels, _, _ = load_gestures()
+    groups, _ = load_gestures()
+    active_channels = groups[0]["emg_channels"] if groups else [0,1,2]
     num_ch = len(active_channels)
     labels = [f"s{i+1}" for i in range(num_ch)]
 

@@ -2071,26 +2071,85 @@ print("  \033[32m✓\033[0m Renamed '${old}' → '${new}' (servo + all gesture r
 PYEOF
 }
 
-# ── remove-gesture ──
-cmd_remove_gesture() {
+# ── add-group ──
+cmd_add_group() {
     local name="${1:-}"
     if [ -z "$name" ]; then
-        err "Usage: ./launch.sh remove-gesture <name>"
+        err "Usage: ./launch.sh add-group <name>"
+        echo "  Example: ./launch.sh add-group gesture_2"
         exit 1
     fi
-    python3 << PYEOF
+    read -rp "  EMG channels (comma-separated, e.g. 3,4,5): " channels
+    read -rp "  Model path (e.g. models/left_arm.pkl): " mpath
+    [ -z "$mpath" ] && mpath="models/model.pkl"
+    python3 -c "
 import json, sys
-with open("${GS}") as f: g = json.load(f)
-if "${name}" not in g.get("gestures", {}):
-    print(f"  '${name}' not found.")
-    sys.exit(1)
-if "${name}" == "rest":
-    print("  Cannot remove 'rest'.")
-    sys.exit(1)
-del g["gestures"]["${name}"]
-with open("${GS}", "w") as f: json.dump(g, f, indent=4)
-print("  \033[32m✓\033[0m Removed '${name}'. Run './launch.sh reload' to apply.")
-PYEOF
+with open('${GS}') as f: g = json.load(f)
+gg = g.setdefault('gesture_groups', {})
+if '${name}' in gg: print(f\"  Already exists.\"); sys.exit(1)
+chs = [int(c.strip()) for c in '${channels}'.split(',') if c.strip()]
+gg['${name}'] = {
+    'emg_channels': {'active': chs, 'names': [f'ch{c}' for c in chs]},
+    'model_path': '${mpath}',
+    'confidence': {'curve': 'quadratic', 'floor_pct': 40, 'ceil_pct': 85},
+    'hysteresis': {'rest_to_active': 4, 'active_to_rest': 2, 'active_to_active': 6},
+    'gestures': {'rest': {'mode': 'freeze', 'audio': {'voice': 'voice_rest_${name}', 'freq_hz': 330, 'freq_ms': 60}}}
+}
+with open('${GS}', 'w') as f: json.dump(g, f, indent=4)
+print(f\"  \033[32m✓\033[0m Created '${name}' with EMG {chs}\")
+"
+}
+
+# ── remove-group ──
+cmd_remove_group() {
+    local name="${1:-}"
+    if [ -z "$name" ]; then
+        err "Usage: ./launch.sh remove-group <name>"
+        python3 -c "
+import json
+with open('${GS}') as f: g = json.load(f)
+print('  Groups: ' + ', '.join(g.get('gesture_groups',{}).keys()))
+"
+        exit 1
+    fi
+    python3 -c "
+import json, sys
+with open('${GS}') as f: g = json.load(f)
+gg = g.get('gesture_groups', {})
+if '${name}' not in gg: print(f\"  Not found.\"); sys.exit(1)
+del gg['${name}']
+with open('${GS}', 'w') as f: json.dump(g, f, indent=4)
+print(f\"  \033[32m✓\033[0m Removed '${name}'.\")
+"
+}
+
+# ── remove-gesture ──
+cmd_remove_gesture() {
+    local group="${1:-}" name="${2:-}"
+    if [ -z "$group" ] || [ -z "$name" ]; then
+        err "Usage: ./launch.sh remove-gesture <group> <gesture>"
+        echo "  Example: ./launch.sh remove-gesture gesture_0 flex"
+        python3 -c "
+import json
+with open('${GS}') as f: g = json.load(f)
+for gn, gd in g.get('gesture_groups', {}).items():
+    print(f'  {gn}: {list(gd.get(\"gestures\",{}).keys())}')
+"
+        exit 1
+    fi
+    python3 -c "
+import json, sys
+with open('${GS}') as f: g = json.load(f)
+gg = g.get('gesture_groups', {})
+if '${group}' not in gg: print(f\"  Group not found.\"); sys.exit(1)
+gs = gg['${group}'].get('gestures', {})
+if '${name}' not in gs: print(f\"  '${name}' not in ${group}.\"); sys.exit(1)
+if '${name}' == 'rest': print('  Cannot remove rest.'); sys.exit(1)
+del gs['${name}']
+with open('${GS}', 'w') as f: json.dump(g, f, indent=4)
+print(f\"  \033[32m✓\033[0m Removed '${name}' from ${group}.\")
+"
+    rm -f "${GS%/*}/audio_cues/voice_${name}.wav" "${GS%/*}/audio_cues/_gen_${name}_"*.wav 2>/dev/null
 }
 
 
@@ -2480,6 +2539,8 @@ case "${MODE}" in
     remove-gesture)         cmd_remove_gesture "$@" ;;
     rename-gesture)         cmd_rename_gesture "$@" ;;
     edit-gesture)           cmd_edit_gesture "$@" ;;
+    add-group)              cmd_add_group "$@" ;;
+    remove-group)           cmd_remove_group "$@" ;;
     add-motor)              cmd_add_motor "$@" ;;
     remove-motor)           cmd_remove_motor "$@" ;;
     edit-motor)             cmd_edit_motor "$@" ;;
