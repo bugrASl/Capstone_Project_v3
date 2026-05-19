@@ -396,32 +396,38 @@ tmux_create_with_kernel() {
 
     # Wrap the kernel invocation in a holder shell that stays alive
     # after the kernel exits. Without this, an immediate kernel crash
-    # (bad runtime.json, missing /opt/cpcu/config.json, segfault on
-    # startup) kills the only window in the session, and tmux destroys
-    # the session before we can apply `remain-on-exit on` — leaving the
+    # kills the only window in the session, and tmux destroys the
+    # session before we can apply `remain-on-exit on` — leaving the
     # caller with the misleading "tmux refused to create session" error.
     #
-    # The holder also prints a clearly-visible exit-code banner so the
-    # user sees the kernel's return value the moment they attach, instead
-    # of having to dig through the kernel log.
-    #
-    # The trailing `exec bash --login` gives a usable shell in the pane
-    # so the user can poke around (run `tail`, `cat`, etc.) without
-    # having to swap to the SHELL window.
-    local kernel_inner="cd ${CPCU_ROOT} && \
-export CPCU_DSP_PATH=\"${CPCU_DSP_PATH:-}\" && \
-taskset -c 0 ${BIN_DIR}/cpcu_kernel --log 2>&1 | tee -a ${kernel_log} ; \
-rc=\$? ; \
-printf '\\n\\033[31m========================================\\n' ; \
-printf '[KERNEL exited with code %d]\\n' \$rc ; \
-printf 'This pane stays open for inspection.\\n' ; \
-printf 'Ctrl-b 1 = SHELL window, Ctrl-b d = detach.\\n' ; \
-printf '========================================\\033[0m\\n\\n' ; \
-exec bash --login"
+    # We write the holder logic to a temporary script and exec it from
+    # tmux rather than passing inline. The inline approach broke because
+    # the `printf '...'` single quotes terminated the outer
+    # `bash -c '...'` string prematurely, making bash see only a
+    # fragment, exit non-zero, and take the window down with it. A
+    # heredoc-built temp file dodges every layer of quoting hell.
+    local kernel_script
+    kernel_script=$(mktemp /tmp/cpcu_kernel_holder.XXXXXX.sh)
+    cat > "${kernel_script}" << HOLDER_EOF
+#!/bin/bash
+cd "${CPCU_ROOT}"
+export CPCU_DSP_PATH="${CPCU_DSP_PATH:-}"
+taskset -c 0 "${BIN_DIR}/cpcu_kernel" --log 2>&1 | tee -a "${kernel_log}"
+rc=\$?
+echo
+printf '\\033[31m========================================\\033[0m\\n'
+printf '\\033[31m[KERNEL exited with code %d]\\033[0m\\n' "\$rc"
+printf 'This pane stays open for inspection.\\n'
+printf 'Ctrl-b 1 = SHELL window, Ctrl-b d = detach.\\n'
+printf '\\033[31m========================================\\033[0m\\n\\n'
+# Drop into a login shell so the user can run tail/cat/etc.
+exec bash --login
+HOLDER_EOF
+    chmod +x "${kernel_script}"
 
     tmux new-session -d -s "$SESSION_NAME" -n "KERNEL" \
         -x "$_cols" -y "$_rows" \
-        "bash -c '${kernel_inner}'"
+        "${kernel_script}"
 
     # Wait briefly for the new session to be reachable. tmux's set-option
     # calls below otherwise race with the daemon and emit harmless but
@@ -612,6 +618,10 @@ cleanup() {
         warn "Cleanup: tearing down tmux session $SESSION_NAME"
         tmux kill-session -t "$SESSION_NAME" 2>/dev/null
     fi
+    # Sweep any temp kernel-holder scripts this PID created — they're
+    # named /tmp/cpcu_kernel_holder.XXXXXX.sh and only valid while the
+    # tmux session is alive. Best-effort; non-fatal if they're gone.
+    rm -f /tmp/cpcu_kernel_holder.*.sh 2>/dev/null || true
     kernel_stop_background_fallback
 }
 trap cleanup EXIT INT TERM
