@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define CPCU_CONFIG_SCHEMA_VERSION  1
+#define CPCU_CONFIG_SCHEMA_VERSION  2
 
 /*  Return codes for CFG_LoadFromFile. */
 typedef enum

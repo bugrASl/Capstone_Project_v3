@@ -28,7 +28,7 @@ emit_default_runtime_json() {
     cat > "${target}" << 'RUNTIMEEOF'
 {
     "// schema_version": "REQUIRED. Bump when removing/renaming fields.",
-    "schema_version": 1,
+    "schema_version": 2,
     "// servo_min_us": "Per-servo minimum pulse width. Order: S0=Base, S1=Upper, S2=Last, S3=Joint1, S4=Joint2, S5=Gripper.",
     "servo_min_us": [ 498, 1074, 1074, 1001, 1001,  976 ],
     "// servo_max_us": "Per-servo maximum pulse width. Same order.",

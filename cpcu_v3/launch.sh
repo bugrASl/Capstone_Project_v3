@@ -226,6 +226,39 @@ preflight_kernel() {
     fi
     log "  Runtime config: ${cfg_path}"
 
+    # Validate runtime.json against what the kernel expects. The C side
+    # bumps CPCU_CONFIG_SCHEMA_VERSION whenever a required field is
+    # added (e.g. v2 added servo_pca_ch for arbitrary PCA routing). A
+    # stale runtime.json from an older clone makes the kernel print a
+    # confusing FATAL and refuse to boot, so we catch the mismatch
+    # here and auto-regenerate from the bundled defaults.
+    local expected_schema actual_schema
+    expected_schema=$(grep -E '^#define CPCU_CONFIG_SCHEMA_VERSION' \
+        "${CPCU_ROOT}/include/cpcu_config.h" 2>/dev/null \
+        | awk '{print $3}')
+    actual_schema=$(python3 -c "
+import json, sys
+try:    print(json.load(open('${CPCU_ROOT}/config/runtime.json')).get('schema_version', '?'))
+except: sys.exit(0)
+" 2>/dev/null)
+    if [ -n "${expected_schema}" ] && [ -n "${actual_schema}" ] \
+            && [ "${expected_schema}" != "${actual_schema}" ]; then
+        warn "runtime.json schema=${actual_schema} but kernel expects ${expected_schema}"
+        warn "Auto-regenerating from defaults (your custom servo limits will be lost)..."
+        local emitter="${CPCU_ROOT}/scripts/_default_runtime_json.sh"
+        if [ -f "${emitter}" ]; then
+            cp "${CPCU_ROOT}/config/runtime.json" \
+               "${CPCU_ROOT}/config/runtime.json.bak.${actual_schema}" 2>/dev/null || true
+            ( . "${emitter}" && emit_default_runtime_json \
+                "${CPCU_ROOT}/config/runtime.json" ) \
+                && log "  runtime.json regenerated (old saved as runtime.json.bak.${actual_schema})"
+        else
+            err "  Cannot find scripts/_default_runtime_json.sh — run"
+            err "    ./launch.sh configure --reset --runtime"
+            fatal "schema mismatch and no emitter available"
+        fi
+    fi
+
     if ! python3 -c "import numpy, scipy, joblib" 2>/dev/null; then
         warn "Python deps missing — DSP will run in feature-only mode."
         warn "Install with: ./launch.sh setup"
@@ -283,6 +316,7 @@ preflight_kernel() {
     # servo lives on); we mirror those values into runtime.json so
     # cpcu_io's I²C driver actually routes PWM to the right outputs.
     sync_servo_pca_ch_to_runtime
+    publish_servo_names
 }
 
 # Pull pca_ch values out of gestures.json (sorted by pca_ch ascending)
@@ -316,6 +350,24 @@ rt["servo_pca_ch"] = pca_ch
 with open(rt_path, "w") as f: json.dump(rt, f, indent=4)
 names = ", ".join(f"{s[0]}->{s[1].get('pca_ch')}" for s in sorted_servos[:6])
 print(f"[sync] servo_pca_ch updated: {pca_ch}  ({names})")
+PYEOF
+}
+
+# Write /tmp/cpcu_servo_names.txt (one name per line, sorted by pca_ch)
+# straight from gestures.json. The TUI reads this file every page-draw
+# so display names match the config. Without this, the TUI falls back
+# to its compile-time defaults until cpcu_dsp.py is up — annoying when
+# the kernel crashes mid-boot. Idempotent + safe to call on every preflight.
+publish_servo_names() {
+    [ -f "${GS}" ] || return 0
+    python3 - "${GS}" << 'PYEOF' || warn "servo-names publish failed"
+import json, sys
+with open(sys.argv[1]) as f: gs = json.load(f)
+sc = sorted(gs.get("servo_channels", {}).items(),
+            key=lambda x: x[1].get("pca_ch", 0))
+with open("/tmp/cpcu_servo_names.txt", "w") as f:
+    for name, _sd in sc[:6]:
+        f.write(name + "\n")
 PYEOF
 }
 
