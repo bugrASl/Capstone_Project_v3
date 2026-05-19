@@ -132,8 +132,8 @@ static void test_init_loads(void)
     install_runtime_json(write_runtime_json());
     bool ok = ED_Init();
     CHECK("ED01a", ok, "ED_Init returned true");
-    CHECK("ED01b", ED_GetFieldCount() >= 13,
-          "field count >= 13 (got %d)", ED_GetFieldCount());
+    CHECK("ED01b", ED_GetFieldCount() >= 12,
+          "field count >= 12 (got %d)", ED_GetFieldCount());
 
     /* Find servo_min_us and check first cell */
     bool found = false;

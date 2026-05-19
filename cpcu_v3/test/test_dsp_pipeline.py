@@ -351,7 +351,7 @@ def test_runtime_loader():
     """v3: load_runtime returns defaults when runtime.json missing."""
     print("\n--- TB-DSP12: runtime loader (defaults) ---")
     import cpcu_dsp
-    _, grip = cpcu_dsp.load_runtime("/tmp/nonexistent.json")
+    grip = cpcu_dsp.load_runtime("/tmp/nonexistent.json")
     ASSERT(800 <= grip <= 2000, f"default grip_firm={grip} in valid range")
 
 

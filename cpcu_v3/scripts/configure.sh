@@ -144,7 +144,7 @@ lookup() {
 # // line comments — only the bare value is returned.
 read_value() {
     local file="$1" define="$2"
-    local full="${REPO_ROOT}/${file}"
+    local full="${CPCU_ROOT}/${file}"
     if [ ! -f "${full}" ]; then
         echo "<file missing>"
         return 1
@@ -187,7 +187,7 @@ validate() {
 # Edit a single #define in a file. Atomic via tmpfile + mv.
 write_value() {
     local file="$1" define="$2" newval="$3"
-    local full="${REPO_ROOT}/${file}"
+    local full="${CPCU_ROOT}/${file}"
     local tmp="${full}.cfgtmp.$$"
     if [ ! -f "${full}" ]; then
         echo -e "${R}[configure]${N} file not found: ${full}"
@@ -220,9 +220,9 @@ do_set() {
     }
     IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
         # skip if target file not in this repo
-        local fpath="${CPCU_ROOT}/${file}"
-        [ ! -f "${fpath}" ] && fpath="${REPO_ROOT}/${file}"
-        [ ! -f "${fpath}" ] && continue
+        if [ ! -f "${CPCU_ROOT}/${file}" ] && [ ! -f "${REPO_ROOT}/${file}" ]; then
+            continue
+        fi
     validate "${flagname}" "${newval}" "${minv}" "${maxv}" || return 1
     local old; old="$(read_value "${file}" "${define}")"
     if [ "${old}" = "${newval}" ]; then
@@ -245,9 +245,9 @@ do_show_one() {
     }
     IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
         # skip if target file not in this repo
-        local fpath="${CPCU_ROOT}/${file}"
-        [ ! -f "${fpath}" ] && fpath="${REPO_ROOT}/${file}"
-        [ ! -f "${fpath}" ] && continue
+        if [ ! -f "${CPCU_ROOT}/${file}" ] && [ ! -f "${REPO_ROOT}/${file}" ]; then
+            continue
+        fi
     local val; val="$(read_value "${file}" "${define}")"
     printf "%-20s = %-20s  (default %s, range %s..%s)\n" \
         "${define}" "${val}" "${defval}" "${minv}" "${maxv}"
@@ -264,9 +264,9 @@ do_show_all() {
     for entry in "${TUNABLES[@]}"; do
         IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
         # skip if target file not in this repo
-        local fpath="${CPCU_ROOT}/${file}"
-        [ ! -f "${fpath}" ] && fpath="${REPO_ROOT}/${file}"
-        [ ! -f "${fpath}" ] && continue
+        if [ ! -f "${CPCU_ROOT}/${file}" ] && [ ! -f "${REPO_ROOT}/${file}" ]; then
+            continue
+        fi
         case "${scope}" in
             bsau) continue ;;  # bsau tunables removed (separate repo)
             cpcu) [[ "${file}" == include/* ]] || continue ;;
@@ -286,9 +286,9 @@ do_diff() {
     for entry in "${TUNABLES[@]}"; do
         IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
         # skip if target file not in this repo
-        local fpath="${CPCU_ROOT}/${file}"
-        [ ! -f "${fpath}" ] && fpath="${REPO_ROOT}/${file}"
-        [ ! -f "${fpath}" ] && continue
+        if [ ! -f "${CPCU_ROOT}/${file}" ] && [ ! -f "${REPO_ROOT}/${file}" ]; then
+            continue
+        fi
         local val; val="$(read_value "${file}" "${define}")"
         if [ "${val}" != "${defval}" ]; then
             printf "  %-30s ${G}%-12s${N} (default ${B}%s${N})\n" \
@@ -308,9 +308,9 @@ do_reset() {
     for entry in "${TUNABLES[@]}"; do
         IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
         # skip if target file not in this repo
-        local fpath="${CPCU_ROOT}/${file}"
-        [ ! -f "${fpath}" ] && fpath="${REPO_ROOT}/${file}"
-        [ ! -f "${fpath}" ] && continue
+        if [ ! -f "${CPCU_ROOT}/${file}" ] && [ ! -f "${REPO_ROOT}/${file}" ]; then
+            continue
+        fi
         local val; val="$(read_value "${file}" "${define}")"
         if [ "${val}" != "${defval}" ]; then
             write_value "${file}" "${define}" "${defval}"
@@ -362,9 +362,9 @@ do_interactive() {
     for entry in "${TUNABLES[@]}"; do
         IFS='|' read -r flagname file define defval minv maxv descr <<< "${entry}"
         # skip if target file not in this repo
-        local fpath="${CPCU_ROOT}/${file}"
-        [ ! -f "${fpath}" ] && fpath="${REPO_ROOT}/${file}"
-        [ ! -f "${fpath}" ] && continue
+        if [ ! -f "${CPCU_ROOT}/${file}" ] && [ ! -f "${REPO_ROOT}/${file}" ]; then
+            continue
+        fi
         case "${scope}" in
             bsau) continue ;;  # bsau tunables removed (separate repo)
             cpcu) [[ "${file}" == include/* ]] || continue ;;

@@ -1962,7 +1962,8 @@ for gn, gd in g.get("gestures", {}).items():
 h("AUDIO EVENTS")
 sep()
 for en, ed in g.get("audio_events", {}).items():
-    print(f"  {en:<20s} voice={ed.get('voice','-'):<28s} {ed.get('freq_hz','-')}Hz")
+    if isinstance(ed, str) or en.startswith("_"): continue
+    print(f"  {en:<20s} P{ed.get('priority','?')}  voice={ed.get('voice','-'):<24s} {ed.get('freq_hz','-')}Hz")
 
 print()
 PYEOF
