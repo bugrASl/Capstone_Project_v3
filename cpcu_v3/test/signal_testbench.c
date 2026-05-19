@@ -152,6 +152,97 @@ static ChannelState channels[WL_NUM_CHANNELS];
 static int  selected_ch     = 0;    /* Currently displayed channel */
 static bool view_all        = true; /* Show all 8 mini-plots vs one big plot */
 
+/*============= EMG CHANNEL NAMES ==========================================================*/
+/*
+ *  Channel labels carry per-channel semantic meaning from gestures.json's
+ *  gesture_groups[].emg_channels.names. launch.sh union-merges names across
+ *  groups (group "right_arm" might own ch0..2, "left_arm" ch3..5, leaving
+ *  ch6/7 unused) and passes the result as --ch-names "Forearm_R,Biceps_R,
+ *  Triceps_R,Forearm_L,Biceps_L,Triceps_L,,".
+ *
+ *  An empty slot ("",  or simply "") means "unused channel" — drawn dimmed.
+ *  No --ch-names flag falls through to plain "ch0".."ch7" labels.
+ *
+ *  Active-channel set:
+ *      --active-channels "0,1,2,3,4,5"
+ *  Same union, just the indices. Used to dim ADC channels no gesture group
+ *  is listening to so the operator can tell at a glance which channels
+ *  actually drive the arm.
+ */
+
+#define CH_NAME_MAX     16
+
+static char  g_ch_name_storage[WL_NUM_CHANNELS][CH_NAME_MAX];
+static bool  g_ch_name_set[WL_NUM_CHANNELS] = {0};
+static bool  g_ch_active[WL_NUM_CHANNELS]   = {true, true, true, true,
+                                               true, true, true, true};
+
+static const char *ch_label(int idx, char *fallback, size_t fb_sz)
+{
+    if(idx < 0 || idx >= WL_NUM_CHANNELS)
+    {
+        snprintf(fallback, fb_sz, "?");
+        return fallback;
+    }
+    if(g_ch_name_set[idx] && g_ch_name_storage[idx][0])
+        return g_ch_name_storage[idx];
+    snprintf(fallback, fb_sz, "ch%d", idx);
+    return fallback;
+}
+
+/* Parse "A,B,C,D,E,F,G,H" into g_ch_name_storage. Empty tokens leave the
+ * slot at its default (=> "ch<n>" fallback in ch_label). */
+static int ch_names_apply_csv(const char *csv)
+{
+    if(!csv || !*csv) return 0;
+    int written = 0;
+    int slot    = 0;
+    const char *p = csv;
+    while(*p && slot < WL_NUM_CHANNELS)
+    {
+        const char *q = p;
+        while(*q && *q != ',') q++;
+        size_t len = (size_t)(q - p);
+        if(len > 0)
+        {
+            if(len >= CH_NAME_MAX) len = CH_NAME_MAX - 1;
+            memcpy(g_ch_name_storage[slot], p, len);
+            g_ch_name_storage[slot][len] = '\0';
+            g_ch_name_set[slot]          = true;
+            written++;
+        }
+        slot++;
+        if(*q == ',') q++;
+        p = q;
+    }
+    return written;
+}
+
+/* Parse "0,1,2,3,4,5" into g_ch_active. Anything not listed is marked
+ * inactive (drawn dimmed in the TUI). Default with no flag = all active. */
+static int ch_active_apply_csv(const char *csv)
+{
+    if(!csv || !*csv) return 0;
+    /* Mark all inactive first; flag enumerates the active ones */
+    for(int i = 0; i < WL_NUM_CHANNELS; i++) g_ch_active[i] = false;
+    int written = 0;
+    const char *p = csv;
+    while(*p)
+    {
+        char *end = NULL;
+        long v = strtol(p, &end, 10);
+        if(end == p) break;
+        if(v >= 0 && v < WL_NUM_CHANNELS)
+        {
+            g_ch_active[v] = true;
+            written++;
+        }
+        p = end;
+        if(*p == ',') p++;
+    }
+    return written;
+}
+
 /* Packet rate tracking */
 static uint32_t prev_pkts   = 0;
 static uint64_t prev_time   = 0;
@@ -593,19 +684,28 @@ static void draw_screen(IPC_Context *ipc, bool demo_mode_)
             int c_col   = (ch < 4) ? 1 : g_mini_col2_x;
             int c_row   = r + (ch % 4) * (g_mini_h + 2);
             bool is_sel = (ch == selected_ch);
+            bool active = g_ch_active[ch];
 
-            /* Channel label */
-            int lbl_cp = is_sel ? CP_MAGENTA : CP_NORMAL;
-            attron(COLOR_PAIR(lbl_cp) | (is_sel ? A_BOLD : 0));
-            mvprintw(c_row, c_col, "%sch%d", is_sel ? ">" : " ", ch);
-            attroff(COLOR_PAIR(lbl_cp) | (is_sel ? A_BOLD : 0));
+            /* Channel label — selected channels in magenta+bold, inactive
+             * (no gesture group listening) channels dimmed. */
+            int lbl_cp = is_sel  ? CP_MAGENTA
+                       : active  ? CP_NORMAL
+                       :           CP_DIM;
+            int lbl_at = (is_sel ? A_BOLD : 0) | (active ? 0 : A_DIM);
+            attron(COLOR_PAIR(lbl_cp) | lbl_at);
+            char fb[16];
+            mvprintw(c_row, c_col, "%s%s",
+                     is_sel ? ">" : " ",
+                     ch_label(ch, fb, sizeof(fb)));
+            attroff(COLOR_PAIR(lbl_cp) | lbl_at);
 
             /* Compact stats next to label */
             attron(COLOR_PAIR(CP_DIM));
             printw(" %4.0fHz %5.3fVpp", channels[ch].dominant_freq, channels[ch].vpp_v);
             attroff(COLOR_PAIR(CP_DIM));
 
-            /* Mini waveform */
+            /* Mini waveform — inactive channels still drawn but unselected
+             * to keep ADC visibility while highlighting the active set. */
             draw_mini_wave(c_row + 1, c_col + 1, g_mini_w, g_mini_h, &channels[ch], is_sel);
         }
 
@@ -615,7 +715,11 @@ static void draw_screen(IPC_Context *ipc, bool demo_mode_)
     {
         /* ═══ SINGLE-CHANNEL VIEW: big plot + full analysis ═══ */
         attron(A_BOLD);
-        mvprintw(r, 1, "CHANNEL %d", selected_ch);
+        char fb[16];
+        mvprintw(r, 1, "CHANNEL %d  (%s)%s",
+                 selected_ch,
+                 ch_label(selected_ch, fb, sizeof(fb)),
+                 g_ch_active[selected_ch] ? "" : "  [inactive]");
         attroff(A_BOLD);
         r++;
 
@@ -650,11 +754,51 @@ int main(int argc, char *argv[])
     signal(SIGINT,  on_sig);
     signal(SIGTERM, on_sig);
 
-    /* Check for --demo flag */
+    const char *ch_names_csv = NULL;
+    const char *active_csv   = NULL;
+
+    /* Parse CLI flags. --demo runs without IPC; --ch-names and
+     * --active-channels come from launch.sh after it reads
+     * gestures.json (gesture_groups[].emg_channels). */
     for(int i = 1; i < argc; i++)
     {
         if(strcmp(argv[i], "--demo") == 0 || strcmp(argv[i], "-d") == 0)
+        {
             demo_mode = true;
+        }
+        else if(strcmp(argv[i], "--ch-names") == 0 && i + 1 < argc)
+        {
+            ch_names_csv = argv[++i];
+        }
+        else if(strcmp(argv[i], "--active-channels") == 0 && i + 1 < argc)
+        {
+            active_csv = argv[++i];
+        }
+        else if(strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
+        {
+            fprintf(stderr,
+                "Usage: %s [options]\n"
+                "  --demo                  synthetic samples, no IPC needed\n"
+                "  --ch-names A,B,...,H    per-channel labels (8 slots, empty = ch<N>)\n"
+                "  --active-channels 0,1,3 mark which channels are listened to\n"
+                "                          by a gesture group (others dimmed)\n"
+                "  --help                  this message\n"
+                "launch.sh injects --ch-names and --active-channels from\n"
+                "gestures.json automatically; manual use is for testing only.\n",
+                argv[0]);
+            return 0;
+        }
+    }
+
+    if(ch_names_csv)
+    {
+        int n = ch_names_apply_csv(ch_names_csv);
+        fprintf(stderr, "[SIG-TB] %d channel name(s) loaded from --ch-names\n", n);
+    }
+    if(active_csv)
+    {
+        int n = ch_active_apply_csv(active_csv);
+        fprintf(stderr, "[SIG-TB] %d active channel(s) marked from --active-channels\n", n);
     }
 
     /* Init channel state */

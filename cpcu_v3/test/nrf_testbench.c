@@ -18,7 +18,11 @@
 #define SPI_DEVICE   "/dev/spidev0.0"
 #define SPI_SPEED    8000000
 #define GPIO_CE      25
-#define RF_CHANNEL   108
+#define RF_CHANNEL   76         /* 2.476 GHz — must match cpcu_io.c's
+                                  * NRF_CHANNEL and the TUI display strings.
+                                  * Both ends of the link (BSAU + CPCU) must
+                                  * agree on this byte or no packets get
+                                  * decoded. */
 #define RF_ADDR      {0xE7, 0xE7, 0xE7, 0xE7, 0xE7}
 
 /* Colors */

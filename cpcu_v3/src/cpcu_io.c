@@ -139,7 +139,13 @@
 #define I2C_DEVICE              "/dev/i2c-1"
 #define PCA9685_ADDR            0x40
 #define GPIO_CE                 25
-#define NRF_CHANNEL             108
+#define NRF_CHANNEL             76          /* 2.476 GHz — quieter than the
+                                             * 2.4-GHz Wi-Fi top band, paired
+                                             * with the matching channel on
+                                             * the BSAU side. Must stay in
+                                             * sync with nrf_testbench.c's
+                                             * RF_CHANNEL and the TUI display
+                                             * strings in cpcu_tui_render.c. */
 #define NRF_ADDRESS             {0xE7, 0xE7, 0xE7, 0xE7, 0xE7}
 
 #define NRF_INIT_RETRIES        3

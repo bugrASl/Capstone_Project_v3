@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <limits.h>             /* PATH_MAX for resolve_dsp_script */
 #include <signal.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -38,9 +39,23 @@
 
 /* Paths */
 #define CPCU_IO_BIN             "/opt/cpcu/bin/cpcu_io"
-#define CPCU_DSP_SCRIPT         "/opt/cpcu/python/cpcu_dsp.py"
-#define CPCU_DSP_SCRIPT_ALT     "./cpcu_dsp.py"
 #define PYTHON3_BIN             "/usr/bin/python3"
+
+/* cpcu_dsp.py search order — first hit wins. The kernel must work in
+ * three scenarios:
+ *   1. Production: file installed at /opt/cpcu/python/ by cmake install
+ *      (this is the primary path).
+ *   2. In-tree dev: kernel launched from repo root by launch.sh, which
+ *      cd's to ${CPCU_ROOT} first. The source file lives at python/.
+ *   3. Manual override: developer sets CPCU_DSP_PATH env var to point
+ *      anywhere. Highest priority — checked before all defaults.
+ *
+ * The legacy "./cpcu_dsp.py" fallback (pre-v3) is kept last so old
+ * scripts that copy the file next to the binary still work, even
+ * though no current workflow does that. */
+#define CPCU_DSP_SCRIPT_PRIMARY "/opt/cpcu/python/cpcu_dsp.py"
+#define CPCU_DSP_SCRIPT_REPO    "./python/cpcu_dsp.py"
+#define CPCU_DSP_SCRIPT_LEGACY  "./cpcu_dsp.py"
 
 /* runtime config path. The default points to the symlinked
  * system path that setup_pi.sh creates (-> repo's config/runtime.json).
@@ -210,20 +225,71 @@ static pid_t spawn_native(const char *label, const char *bin,
  *  Spawn a Python script with CPU affinity and real-time priority.
  */
 
+/* Walk the cpcu_dsp.py search order and return the first path that's
+ * readable. Returns NULL if nothing is found. Static buffer means the
+ * returned pointer is valid until the next call — fine for our usage
+ * (one resolve per spawn). Callers must NOT free the returned string. */
+static const char *resolve_dsp_script(void)
+{
+    static char resolved[PATH_MAX];
+
+    /* 1. Env override — highest priority. */
+    const char *env = getenv("CPCU_DSP_PATH");
+    if(env && *env && access(env, F_OK) == 0)
+    {
+        snprintf(resolved, sizeof(resolved), "%s", env);
+        return resolved;
+    }
+
+    /* 2-4. Defaults, in priority order. */
+    const char *candidates[] = {
+        CPCU_DSP_SCRIPT_PRIMARY,
+        CPCU_DSP_SCRIPT_REPO,
+        CPCU_DSP_SCRIPT_LEGACY,
+        NULL
+    };
+    for(int i = 0; candidates[i]; i++)
+    {
+        if(access(candidates[i], F_OK) == 0)
+        {
+            snprintf(resolved, sizeof(resolved), "%s", candidates[i]);
+            return resolved;
+        }
+    }
+
+    /* Nothing worked — caller will log the full search list. */
+    return NULL;
+}
+
 static pid_t spawn_python(const char *label, const char *script,
                            const char *cores, int prio)
 {
-    /* Check if script exists at primary path, fall back to alt */
-    const char *actual_script       =   script;
-    if(access(script, F_OK) != 0)
+    /* `script` is the *preferred* path requested by the caller. If it
+     * doesn't exist, fall back to the resolver's search order. Both
+     * paths are checked here so a typo in the caller-supplied path
+     * doesn't silently mask a working install. */
+    const char *actual_script           =   script;
+    if(!actual_script || access(actual_script, F_OK) != 0)
     {
-        actual_script               =   CPCU_DSP_SCRIPT_ALT;
-        if(access(actual_script, F_OK) != 0)
+        actual_script                   =   resolve_dsp_script();
+        if(!actual_script)
         {
-            LOG_E("KERN", "%s: script not found at %s or %s",
-                  label, script, CPCU_DSP_SCRIPT_ALT);
+            LOG_E("KERN",
+                  "%s: script not found. Tried:\n"
+                  "    $CPCU_DSP_PATH = %s\n"
+                  "    %s   (installed)\n"
+                  "    %s   (repo dev)\n"
+                  "    %s   (legacy)\n"
+                  "  Re-run './launch.sh build' to install python/cpcu_dsp.py",
+                  label,
+                  getenv("CPCU_DSP_PATH") ? getenv("CPCU_DSP_PATH") : "(unset)",
+                  CPCU_DSP_SCRIPT_PRIMARY,
+                  CPCU_DSP_SCRIPT_REPO,
+                  CPCU_DSP_SCRIPT_LEGACY);
             return -1;
         }
+        LOG_W("KERN", "%s: preferred path '%s' missing, using fallback '%s'",
+              label, script ? script : "(null)", actual_script);
     }
 
     pid_t pid                       =   fork();
@@ -398,7 +464,7 @@ int main(int argc, char *argv[])
     }
 
     /* Spawn cpcu_dsp.py on Cores 1-2 */
-    pid_t dsp_pid                   =   spawn_python("cpcu_dsp", CPCU_DSP_SCRIPT, "1,2", 80);
+    pid_t dsp_pid                   =   spawn_python("cpcu_dsp", CPCU_DSP_SCRIPT_PRIMARY, "1,2", 80);
     if(dsp_pid > 0)
         wait_ready("cpcu_dsp", &ipc.ctrl->dsp_ready, READY_TIMEOUT_S);
 
@@ -442,7 +508,7 @@ int main(int argc, char *argv[])
         if(dead == dsp_pid)
         {
             LOG_W("KERN", "cpcu_dsp died (status=%d) — restarting", st);
-            dsp_pid                 =   spawn_python("cpcu_dsp", CPCU_DSP_SCRIPT, "1,2", 80);
+            dsp_pid                 =   spawn_python("cpcu_dsp", CPCU_DSP_SCRIPT_PRIMARY, "1,2", 80);
         }
 
         /* Heartbeat check (cpcu_io writes every 100ms) */

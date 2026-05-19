@@ -882,7 +882,7 @@ void draw_page_radio(int r, IPC_Context *ipc,
             nrf_status == 0 ? "OK" : "FAIL");
     draw_lv(r, g_col_r, "State:",       state_color(sys_state), "%s", state_str(sys_state));
     r++;
-    draw_lv(r, 1,       "Channel:",     CP_CYAN, "108  (2.508 GHz)");
+    draw_lv(r, 1,       "Channel:",     CP_CYAN, "76  (2.476 GHz)");
     draw_lv(r, g_col_r, "IO ready:",    io_rdy ? CP_GOOD : CP_BAD, "%s", io_rdy ? "YES" : "NO");
     r++;
     draw_lv(r, 1,       "Address:",     CP_CYAN, "E7:E7:E7:E7:E7  (5-byte)");
@@ -1151,6 +1151,126 @@ void draw_page_dsp(int r, IPC_Context *ipc)
         printw("%u", export_seq);
         attroff(COLOR_PAIR(CP_DIM));
         r += 2;
+
+        /*==================== END-TO-END LATENCY WATERFALL ====================
+         * Each module measures or fixes its own stage; here we stitch them
+         * together so the operator can see the full BSAU → servo budget
+         * without leaving the TUI. Constants come from the per-module
+         * datasheets / wall-clock probes; measurements come from
+         * cpcu_dsp.py via the IPC_DSPExport padding region.
+         *
+         * Math (matches cpcu_dsp.py's _print_latency_waterfall):
+         *   BSAU stage      = ADC_PACK + WIRELESS                 (const)
+         *   CPCU stage      = SPI_UNPACK + RING_DWELL + DSP_COMPUTE + SMOOTHER_I2C
+         *   SERVO stage     = SERVO_MECH                          (const)
+         *   End-to-end E2E  = BSAU + CPCU + SERVO
+         *
+         * The SYS-REQ-01 target is < 300 ms wall-time from EMG event to
+         * mechanical motion. */
+        uint32_t lat_pkt_us  = tui_lat_pkt_to_servo_us(ipc->dsp_export);
+        uint32_t lat_dwell   = tui_lat_ring_dwell_us  (ipc->dsp_export);
+        uint32_t lat_dsp     = tui_lat_dsp_compute_us (ipc->dsp_export);
+        uint32_t lat_seq_age = tui_lat_seq_age        (ipc->dsp_export);
+
+        if(lat_pkt_us > 0)
+        {
+            /* Reconstruct the per-segment breakdown.
+             *
+             * lat_pkt_us is the wall-clock cpcu_dsp.py measures from the
+             * BSAU packet's rx_time_us stamp (taken in cpcu_io BEFORE the
+             * NRF SPI read of the payload) to the moment cpcu_dsp writes
+             * the motor command into IPC. It therefore covers:
+             *   SPI_UNPACK + ring dwell + DSP compute + motor IPC write.
+             *
+             * smoother+I²C is a SEPARATE downstream tick in cpcu_io that
+             * runs at 50 Hz: it reads motor_cmd and pushes PWM to the
+             * PCA9685. So we add it after lat_pkt_us, not inside it.
+             *
+             * Total budget:
+             *   BSAU_const + lat_pkt_us + SMOOTHER_I2C_const + SERVO_MECH_const
+             */
+            uint32_t bsau_const = TUI_LAT_ADC_PACK_US + TUI_LAT_WIRELESS_US;
+            uint32_t cpcu_meas  = lat_pkt_us;
+            uint32_t smth_const = TUI_LAT_SMOOTHER_I2C_US;
+            uint32_t srvo_const = TUI_LAT_SERVO_MECH_US;
+            uint32_t e2e_us     = bsau_const + cpcu_meas
+                                + smth_const + srvo_const;
+            float    e2e_ms     = e2e_us / 1000.0f;
+
+            int e2e_cp = (e2e_ms < 200.0f) ? CP_GOOD
+                       : (e2e_ms < 300.0f) ? CP_WARN
+                       :                     CP_BAD;
+
+            draw_hline(r - 1, 0, g_tui_w);
+            draw_section(r, 1, "END-TO-END LATENCY  (BSAU EMG event → servo motion)");
+            r++;
+
+            /* Headline: total wall time + budget comparison */
+            mvprintw(r, 3, "E2E total: ");
+            attron(COLOR_PAIR(e2e_cp) | A_BOLD);
+            printw("%6.1f ms", e2e_ms);
+            attroff(COLOR_PAIR(e2e_cp) | A_BOLD);
+            printw("   budget: ");
+            attron(COLOR_PAIR(CP_DIM));
+            printw("< 300 ms  (SYS-REQ-01)");
+            attroff(COLOR_PAIR(CP_DIM));
+            r++;
+
+            /* Per-stage breakdown, indented like a tree so the totals
+             * line up under each section header. Measurements get a
+             * "meas" tag, fixed constants get "const". */
+            attron(COLOR_PAIR(CP_DIM));
+            mvprintw(r, 3, "┌─ BSAU ────────────────────────────────────");
+            attroff(COLOR_PAIR(CP_DIM));
+            r++;
+            draw_lv(r, 3, "│ ADC + pack:",   CP_DIM, "%5u us  (const)", TUI_LAT_ADC_PACK_US);
+            r++;
+            draw_lv(r, 3, "│ wireless:",     CP_DIM, "%5u us  (const)", TUI_LAT_WIRELESS_US);
+            r++;
+            attron(COLOR_PAIR(CP_DIM));
+            mvprintw(r, 3, "├─ CPCU ────────────────────────────────────");
+            attroff(COLOR_PAIR(CP_DIM));
+            r++;
+            int cp_cpcu = (cpcu_meas > 100000) ? CP_WARN : CP_GOOD;
+            draw_lv(r, 3, "│ pkt → motor:",
+                    cp_cpcu, "%5u us  (meas, %.1f ms)", cpcu_meas, cpcu_meas/1000.0f);
+            r++;
+            draw_lv(r, 3, "│   ring dwell:", CP_CYAN, "%5u us  (meas)", lat_dwell);
+            r++;
+            int cp_dsp = (lat_dsp > 50000) ? CP_WARN : CP_CYAN;
+            draw_lv(r, 3, "│   DSP compute:", cp_dsp, "%5u us  (meas)", lat_dsp);
+            r++;
+            draw_lv(r, 3, "│ smoother+I²C:", CP_DIM, "%5u us  (const, 50 Hz tick)", smth_const);
+            r++;
+            attron(COLOR_PAIR(CP_DIM));
+            mvprintw(r, 3, "└─ SERVO ───────────────────────────────────");
+            attroff(COLOR_PAIR(CP_DIM));
+            r++;
+            draw_lv(r, 3, "  mechanical:",  CP_DIM, "%5u us  (const, SG90)", srvo_const);
+            r++;
+
+            /* Seq-age is a sanity check: oldest packet in the inference
+             * window is "seq_age" packets behind the newest. With 1 kHz
+             * BSAU packet rate this equals milliseconds. Values > 250
+             * (one full window) indicate a stalled ring. */
+            int cp_seq = (lat_seq_age > 250) ? CP_BAD
+                       : (lat_seq_age > 220) ? CP_WARN
+                       :                       CP_GOOD;
+            draw_lv(r, 3, "  seq age:",
+                    cp_seq, "%5u pkts  (oldest sample in window, ≈ ms @1 kHz)",
+                    lat_seq_age);
+            r += 2;
+        }
+        else
+        {
+            /* DSP hasn't published a latency sample yet — typically
+             * means cpcu_dsp.py is still warming up its first window
+             * or no BSAU packets are flowing. */
+            attron(COLOR_PAIR(CP_DIM));
+            mvprintw(r, 3, "End-to-end latency: waiting for DSP to fill its first window...");
+            attroff(COLOR_PAIR(CP_DIM));
+            r += 2;
+        }
 
         draw_hline(r - 1, 0, g_tui_w);
         draw_section(r, 1, "CLASS CONFIDENCE (% softmax probability)");
@@ -1457,12 +1577,51 @@ void draw_page_health(int r, IPC_Context *ipc,
 
         #define SYS_REQ(id, name, ok, detail) do {             r++;             int _cp = (ok) ? CP_GOOD : CP_BAD;             mvprintw(r, 2, "%-10s %-20s", (id), (name));             attron(COLOR_PAIR(_cp) | A_BOLD);             printw("[%s]", (ok) ? "PASS" : "FAIL");             attroff(COLOR_PAIR(_cp) | A_BOLD);             attron(COLOR_PAIR(CP_DIM));             printw("  %s", (detail));             attroff(COLOR_PAIR(CP_DIM));             if(ok) sr_pass++; else sr_fail++;         } while(0)
 
-        /* Compute metrics from already-loaded telemetry */
-        float est_latency_ms = (float)dsp_lat / 1000.0f + 200.0f + 20.0f;
+        /* Compute metrics from already-loaded telemetry.
+         *
+         * The old formula was a rough hand-wave:
+         *   est = dsp_max_latency/1000 + 200 (observation window) + 20 (servo)
+         * which double-counted parts of the inference window and ignored
+         * actual radio/I²C transport. Now that cpcu_dsp.py publishes a
+         * measured pkt→servo wall-time per tick (lat_pkt_us), the math
+         * becomes the real budget:
+         *
+         *   E2E = BSAU_const (ADC+wireless)            // datasheet
+         *       + CPCU_meas  (SPI+ring+DSP+smoother)    // pkt_to_servo_us
+         *       + SERVO_const (mechanical)              // datasheet
+         *
+         * If lat_pkt_us is 0 (DSP hasn't published yet) we keep the old
+         * rough estimate so the test runs in pre-DSP demo mode too. */
+        uint32_t lat_pkt_us = tui_lat_pkt_to_servo_us(ipc->dsp_export);
+        float est_latency_ms;
+        char  lat_detail[80];
+        if(lat_pkt_us > 0)
+        {
+            /* lat_pkt_us is measured from cpcu_io's rx_time_us stamp (taken
+             * BEFORE the NRF SPI read) through to cpcu_dsp.py writing the
+             * motor command into IPC. That covers SPI_UNPACK + ring dwell
+             * + DSP compute. The smoother + I²C path is separate (cpcu_io
+             * reads motor_cmd then drives the PCA9685 on a 50 Hz tick) so
+             * we must add it explicitly. */
+            uint32_t bsau_us  = TUI_LAT_ADC_PACK_US + TUI_LAT_WIRELESS_US;
+            uint32_t smth_us  = TUI_LAT_SMOOTHER_I2C_US;
+            uint32_t srvo_us  = TUI_LAT_SERVO_MECH_US;
+            uint32_t e2e_us   = bsau_us + lat_pkt_us + smth_us + srvo_us;
+            est_latency_ms    = e2e_us / 1000.0f;
+            snprintf(lat_detail, sizeof(lat_detail),
+                     "%.1f ms (BSAU %u + CPCU %u + smth %u + srv %u us)",
+                     est_latency_ms, bsau_us, lat_pkt_us, smth_us, srvo_us);
+        }
+        else
+        {
+            est_latency_ms = (float)dsp_lat / 1000.0f + 200.0f + 20.0f;
+            snprintf(lat_detail, sizeof(lat_detail),
+                     "%.0f ms (obs+inf+servo, no DSP measurement yet)",
+                     est_latency_ms);
+        }
         float batt_req = 99.0f;  /* v3: battery bypassed */
 
-        char buf1[64], buf2[64], buf3[64], buf4[64], buf5[64], buf6[64], buf7[64];
-        snprintf(buf1, 64, "%.0f ms (obs+inf+servo)", est_latency_ms);
+        char buf2[64], buf3[64], buf4[64], buf5[64], buf6[64], buf7[64];
         snprintf(buf2, 64, "%.2f V", batt_req);
         snprintf(buf3, 64, "%.3f %%", loss_rate * 100.0f);
         snprintf(buf4, 64, "%u pkt/s", pkt_rate);
@@ -1470,7 +1629,7 @@ void draw_page_health(int r, IPC_Context *ipc,
         snprintf(buf6, 64, "%s", state_str(sys_state));
         snprintf(buf7, 64, "%u entries", safe_ents);
 
-        SYS_REQ("SYS-REQ-01", "E2E latency <300ms",  est_latency_ms < 300, buf1);
+        SYS_REQ("SYS-REQ-01", "E2E latency <300ms",  est_latency_ms < 300, lat_detail);
         SYS_REQ("SYS-REQ-03", "Battery >2.7V",       batt_req > 2.7f,      buf2);
         SYS_REQ("SYS-REQ-04", "Pkt loss <1%%",        loss_rate < 0.01f,    buf3);
         SYS_REQ("SYS-REQ-05", "Radio >900 pkt/s",    pkt_rate > 900,       buf4);
@@ -1507,11 +1666,40 @@ void draw_page_health(int r, IPC_Context *ipc,
 
     uint32_t sample_rate_est = pkt_rate * 2;  /* 2 samples per packet */
 
-    /* ── SYS-REQ-01: End-to-End Latency ── */
-    float e2e_ms = 200.0f + (dsp_lat / 1000.0f) + 20.0f;  /* obs + inference + servo tick */
-    REQ_ROW("SYS-REQ-01", "E2E latency < 300 ms",
-            (e2e_ms < 300.0f),
-            "%.0f ms (obs 200 + inf %.0f + servo 20)", e2e_ms, dsp_lat / 1000.0f);
+    /* ── SYS-REQ-01: End-to-End Latency ──
+     *
+     * E2E budget = BSAU stage (ADC+wireless, datasheet)
+     *            + CPCU stage (lat_pkt_us measured by cpcu_dsp.py; spans
+     *              SPI_UNPACK + ring dwell + DSP compute + IPC write)
+     *            + smoother + I²C (cpcu_io's PCA9685 update tick, fixed)
+     *            + servo mechanical (datasheet)
+     *
+     * Two paths depending on whether cpcu_dsp.py has published a tick yet:
+     *   measured  →  full chain with real CPCU number
+     *   pre-DSP   →  legacy obs+inf+servo estimate            (ballpark
+     *                only; lets the test run before any window fills) */
+    uint32_t lat_pkt_us2 = tui_lat_pkt_to_servo_us(ipc->dsp_export);
+    float e2e_ms;
+    if(lat_pkt_us2 > 0)
+    {
+        uint32_t e2e_us = TUI_LAT_ADC_PACK_US + TUI_LAT_WIRELESS_US
+                        + lat_pkt_us2
+                        + TUI_LAT_SMOOTHER_I2C_US
+                        + TUI_LAT_SERVO_MECH_US;
+        e2e_ms = e2e_us / 1000.0f;
+        REQ_ROW("SYS-REQ-01", "E2E latency < 300 ms",
+                (e2e_ms < 300.0f),
+                "%.1f ms (BSAU 558us + CPCU %.1f ms + smth 0.6 ms + servo 15 ms, meas)",
+                e2e_ms, lat_pkt_us2 / 1000.0f);
+    }
+    else
+    {
+        e2e_ms = 200.0f + (dsp_lat / 1000.0f) + 20.0f;
+        REQ_ROW("SYS-REQ-01", "E2E latency < 300 ms",
+                (e2e_ms < 300.0f),
+                "%.0f ms (obs 200 + inf %.0f + servo 20, no DSP yet)",
+                e2e_ms, dsp_lat / 1000.0f);
+    }
 
     /* ── SYS-REQ-03: Durability (battery + uptime) ── */
     REQ_ROW("SYS-REQ-03a", "Battery (not sampled)",
@@ -1974,7 +2162,7 @@ void draw_page_config(int r, IPC_Context *ipc)
     draw_lv(r, 1,       "Radio:",         CP_CYAN, "nRF24L01+  (2.4 GHz GFSK)");
     draw_lv(r, g_col_r, "Path:",          CP_CYAN, "/dev/shm/cpcu_ipc  (66240 B)");
     r++;
-    draw_lv(r, 1,       "Channel:",       CP_CYAN, "108  (2.508 GHz, ISM)");
+    draw_lv(r, 1,       "Channel:",       CP_CYAN, "76  (2.476 GHz, ISM)");
     draw_lv(r, g_col_r, "Layout:",        CP_CYAN, "ctrl + ring + motor + dsp_export");
     r++;
     draw_lv(r, 1,       "Address:",       CP_CYAN, "E7:E7:E7:E7:E7");

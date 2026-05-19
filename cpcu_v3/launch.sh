@@ -198,13 +198,66 @@ preflight_kernel() {
     [ -x "${BIN_DIR}/cpcu_io" ] \
         || fatal "Missing ${BIN_DIR}/cpcu_io — run './launch.sh build'"
 
+    # runtime.json is THE #1 cause of "TUI doesn't attach" — the kernel
+    # reads it at startup and aborts if any field is malformed or absent,
+    # then the tmux session dies before the user has a chance to attach
+    # and see why. Validate up front so the error message lands in their
+    # current shell instead of inside a tmux pane that's already gone.
+    local cfg_path=""
+    for p in /opt/cpcu/config.json "${CPCU_ROOT}/config/runtime.json"; do
+        if [ -r "$p" ]; then
+            cfg_path="$p"
+            break
+        fi
+    done
+    if [ -z "${cfg_path}" ]; then
+        err "════════════════════════════════════════════════════════════"
+        err "  runtime.json NOT FOUND"
+        err ""
+        err "  cpcu_kernel needs config/runtime.json (or its installed"
+        err "  symlink /opt/cpcu/config.json) and will crash without it."
+        err "  Regenerate the defaults with:"
+        err ""
+        err "      ./launch.sh configure --reset --runtime"
+        err ""
+        err "  Then re-run ./launch.sh tui."
+        err "════════════════════════════════════════════════════════════"
+        fatal "Pre-flight aborted: missing runtime.json"
+    fi
+    log "  Runtime config: ${cfg_path}"
+
     if ! python3 -c "import numpy, scipy, joblib" 2>/dev/null; then
         warn "Python deps missing — DSP will run in feature-only mode."
         warn "Install with: ./launch.sh setup"
     fi
 
-    [ -f "${PYTHON_INSTALL_DIR}/cpcu_dsp.py" ] \
-        || warn "${PYTHON_INSTALL_DIR}/cpcu_dsp.py missing — re-run './launch.sh build'"
+    # Resolve cpcu_dsp.py location and export CPCU_DSP_PATH so the kernel
+    # doesn't have to guess. The kernel itself has a 3-way fallback
+    # (installed → repo → legacy), but pre-resolving here gives a clear
+    # error message in the user's shell instead of letting it surface as
+    # a respawn loop inside the tmux KERNEL window.
+    DSP_PATH=""
+    for p in "${PYTHON_INSTALL_DIR}/cpcu_dsp.py" \
+             "${CPCU_ROOT}/python/cpcu_dsp.py" \
+             "${CPCU_ROOT}/cpcu_dsp.py"; do
+        if [ -r "$p" ]; then
+            DSP_PATH="$p"
+            break
+        fi
+    done
+    if [ -z "${DSP_PATH}" ]; then
+        err "════════════════════════════════════════════════════════════"
+        err "  cpcu_dsp.py NOT FOUND in any expected location:"
+        err "    ${PYTHON_INSTALL_DIR}/cpcu_dsp.py    (installed)"
+        err "    ${CPCU_ROOT}/python/cpcu_dsp.py      (repo source)"
+        err "    ${CPCU_ROOT}/cpcu_dsp.py             (legacy)"
+        err ""
+        err "  Re-run:  ./launch.sh build"
+        err "════════════════════════════════════════════════════════════"
+        fatal "Pre-flight aborted: missing cpcu_dsp.py"
+    fi
+    export CPCU_DSP_PATH="${DSP_PATH}"
+    log "  DSP script: ${DSP_PATH}"
 
     if ! ls "${MODEL_DIR}"/*.pkl >/dev/null 2>&1; then
         warn "No ML model (.pkl) in ${MODEL_DIR} — DSP will run feature-only"
@@ -286,9 +339,13 @@ tmux_create_with_kernel() {
     _cols=${_cols:-80}
     _rows=${_rows:-24}
 
+    # Pass CPCU_DSP_PATH explicitly through the tmux shell so the kernel
+    # inherits it even though tmux strips most env by default. cd to
+    # CPCU_ROOT first so the kernel's ./python/cpcu_dsp.py fallback also
+    # works in case the export is somehow lost.
     tmux new-session -d -s "$SESSION_NAME" -n "KERNEL" \
         -x "$_cols" -y "$_rows" \
-        "bash -c 'cd ${CPCU_ROOT} && exec taskset -c 0 ${BIN_DIR}/cpcu_kernel --log 2>&1 | tee -a ${kernel_log}'"
+        "bash -c 'cd ${CPCU_ROOT} && export CPCU_DSP_PATH=\"${CPCU_DSP_PATH:-}\" && exec taskset -c 0 ${BIN_DIR}/cpcu_kernel --log 2>&1 | tee -a ${kernel_log}'"
 
     # Wait briefly for the new session to be reachable. tmux's set-option
     # calls below otherwise race with the daemon and emit harmless but
@@ -300,6 +357,14 @@ tmux_create_with_kernel() {
         sleep 0.1
     done
 
+    if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        err "tmux refused to create session '${SESSION_NAME}' — is tmux installed?"
+        return 1
+    fi
+
+    # remain-on-exit keeps dead windows visible so the user can read
+    # the kernel's crash output when something goes wrong, instead of
+    # the whole session vanishing the moment cpcu_kernel exits.
     tmux set-option -t "$SESSION_NAME" remain-on-exit on        >/dev/null 2>&1
     tmux set-option -t "$SESSION_NAME" status on                >/dev/null 2>&1
     tmux set-option -t "$SESSION_NAME" status-justify centre    >/dev/null 2>&1
@@ -315,18 +380,68 @@ tmux_create_with_kernel() {
     tmux_add_window "SHELL" "bash --login"
 
     log "Waiting for shared memory..."
-    for i in $(seq 1 30); do
+
+    # Poll /dev/shm/cpcu_ipc up to 15 s. The kernel typically wins this
+    # race in <300 ms when runtime.json is healthy, so a long wait means
+    # something's wrong. Check the KERNEL window each iteration: if the
+    # kernel process has died, bail immediately with the actual error
+    # message instead of waiting out the full timeout.
+    local attempts=30
+    for i in $(seq 1 ${attempts}); do
         if [ -e /dev/shm/cpcu_ipc ]; then
             log "Shared memory ready after $((i*500))ms"
-            sleep 1
+            sleep 1   # let kernel finish init (cpcu_io fork, capability drop)
+            tmux_verify_kernel_alive || return 1
             return 0
+        fi
+        # Has the kernel window died? (remain-on-exit keeps it visible
+        # but reports dead state via #{window_dead} format flag.)
+        local dead
+        dead=$(tmux list-windows -t "${SESSION_NAME}:KERNEL" \
+                  -F '#{window_dead}' 2>/dev/null || echo "1")
+        if [ "${dead}" = "1" ]; then
+            err "════════════════════════════════════════════════════════════"
+            err "  cpcu_kernel died during startup."
+            err "  Last log lines:"
+            err "════════════════════════════════════════════════════════════"
+            tail -n 20 "${kernel_log}" 2>/dev/null | sed 's/^/   | /' >&2
+            err "════════════════════════════════════════════════════════════"
+            err "  Full log: ${kernel_log}"
+            err "  To inspect interactively (window survives until you stop):"
+            err "    ./launch.sh attach    # Ctrl-b 0 = KERNEL pane"
+            err "    ./launch.sh stop      # then tear it down"
+            err "════════════════════════════════════════════════════════════"
+            # leave session alive on purpose so user can attach
+            TMUX_OWNED=""
+            return 1
         fi
         sleep 0.5
     done
 
-    err "Kernel didn't bring up /dev/shm/cpcu_ipc within 15s"
-    err "Inspect what happened: ./launch.sh attach"
+    err "Kernel didn't bring up /dev/shm/cpcu_ipc within 15 s"
+    err "  Inspect: ./launch.sh attach   (Ctrl-b 0 = KERNEL pane)"
+    err "  Stop:    ./launch.sh stop"
+    err "  Log:     ${kernel_log}"
+    TMUX_OWNED=""   # leave session alive so user can investigate
     return 1
+}
+
+# Verify the kernel window is still alive *after* shared memory came up
+# — catches the rare case where cpcu_io forks, runtime.json validation
+# fails mid-init, and the kernel exits in the brief window between
+# mmap'ing /dev/shm/cpcu_ipc and reaching the main loop. Without this
+# check we'd open the TUI window onto a dead supervisor.
+tmux_verify_kernel_alive() {
+    local dead
+    dead=$(tmux list-windows -t "${SESSION_NAME}:KERNEL" \
+              -F '#{window_dead}' 2>/dev/null || echo "1")
+    if [ "${dead}" = "1" ]; then
+        err "Kernel crashed right after mapping /dev/shm/cpcu_ipc."
+        err "  Inspect: ./launch.sh attach  (Ctrl-b 0)"
+        TMUX_OWNED=""
+        return 1
+    fi
+    return 0
 }
 
 tmux_add_window() {
@@ -379,6 +494,7 @@ tmux_attach_at() {
 kernel_start_background_fallback() {
     log "Starting cpcu_kernel in background (logs → ${LOG_DIR}/cpcu.log)..."
     cd "${BIN_DIR}"
+    export CPCU_DSP_PATH="${CPCU_DSP_PATH:-}"
     ( taskset -c 0 ./cpcu_kernel --log 2>&1 | tee -a "${LOG_DIR}/cpcu.log" ) &
     KERNEL_PID=$!
 
@@ -679,6 +795,7 @@ run_kernel_only() {
     log "  Log: ${kernel_log}"
     trap - EXIT INT TERM
     cd "${BIN_DIR}"
+    export CPCU_DSP_PATH="${CPCU_DSP_PATH:-}"
     exec taskset -c 0 ./cpcu_kernel --log 2>&1 | tee -a "${kernel_log}"
 }
 
@@ -774,7 +891,9 @@ run_signal_tmux() {
     tmux_create_with_kernel || fatal "Couldn't bring up kernel"
     local sig_log
     sig_log=$(make_log_path "signal")
-    tmux_add_window "SIGNAL" "${sig_bin}"
+    local sig_args
+    sig_args="$(signal_cli_args)"
+    tmux_add_window "SIGNAL" "${sig_bin} ${sig_args}"
     if [ "${WITH_WS:-0}" = "1" ]; then
         local ws_log
         ws_log=$(make_log_path "ws")
@@ -784,6 +903,40 @@ run_signal_tmux() {
     fi
     log "Logs: ${LOG_DIR}/"
     tmux_attach_at "SIGNAL"
+}
+
+# Build the --ch-names and --active-channels CLI string for
+# signal_testbench by reading gestures.json. Each gesture group contributes
+# its emg_channels.{active,names}; if multiple groups overlap on a channel,
+# the first group's name wins (deterministic order matches dict insertion
+# order from gestures.json, which is what the user sees in show-config).
+# Empty on any error so the testbench falls back to its "ch<N>" defaults.
+signal_cli_args() {
+    [ -r "${GS}" ] || return 0
+    python3 - "${GS}" << 'PYEOF' 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1]) as f: g = json.load(f)
+    names  = [""] * 8
+    active = set()
+    for grp in g.get("gesture_groups", {}).values():
+        ec   = grp.get("emg_channels", {})
+        acts = ec.get("active", [])
+        nms  = ec.get("names",  [])
+        for i, ch in enumerate(acts):
+            if 0 <= ch < 8:
+                active.add(ch)
+                if i < len(nms) and not names[ch]:
+                    names[ch] = nms[i]
+    name_csv = ",".join(names)
+    act_csv  = ",".join(str(c) for c in sorted(active))
+    parts = []
+    if any(names): parts += ["--ch-names",        name_csv]
+    if active:     parts += ["--active-channels", act_csv]
+    print(" ".join(parts))
+except Exception:
+    pass
+PYEOF
 }
 
 # Helpers for --with-ws composition. Both invoked from the run_*_tmux
@@ -823,7 +976,9 @@ ws_window_cmd() {
 # Demo variant: signal_testbench --demo. Generates synthetic 100 Hz
 # sines on all 8 channels internally — no kernel, no /dev/shm/cpcu_ipc,
 # no BSAU needed. Useful for screenshots, verifying TUI rendering,
-# and sanity-checking that the testbench builds correctly.
+# and sanity-checking that the testbench builds correctly. Still gets
+# --ch-names/--active-channels so the demo plot's labels match the
+# user's config too.
 run_signal_demo() {
     preflight_signal
     local sig_bin="${RESOLVED_BIN}"
@@ -831,8 +986,10 @@ run_signal_demo() {
     log "  Inside the TUI:  w cycle wave types  [/] change frequency  q quit"
     sleep 0.5
     trap - EXIT INT TERM
+    local sig_args
+    sig_args="$(signal_cli_args)"
     cd "$(dirname "${sig_bin}")"
-    exec "${sig_bin}" --demo
+    exec "${sig_bin}" --demo ${sig_args}
 }
 
 run_pca() {
@@ -850,8 +1007,31 @@ run_pca() {
     else
         warn "No runtime.json found — pca_testbench will use compile-time defaults"
     fi
+
+    # ── Pull servo names from gestures.json so the TUI shows the user's
+    #    current names instead of compile-time strings. Sort by pca_ch so
+    #    the CSV index matches the testbench's logical servo index. Silent
+    #    fallback if gestures.json is missing or unparseable.
+    local names_csv=""
+    if [ -r "${GS}" ]; then
+        names_csv=$(python3 - "${GS}" << 'PYEOF' 2>/dev/null || true
+import json, sys
+try:
+    with open(sys.argv[1]) as f: g = json.load(f)
+    sc = sorted(g.get("servo_channels", {}).items(),
+                key=lambda x: x[1].get("pca_ch", 0))
+    print(",".join(n for n, _ in sc))
+except Exception:
+    pass
+PYEOF
+)
+    fi
+    local names_arg=""
+    [ -n "${names_csv}" ] && names_arg="--names ${names_csv}"
+    [ -n "${names_csv}" ] && log "Servo names from gestures.json: ${names_csv}"
+
     cd "$(dirname "${pca_bin}")"
-    "${pca_bin}" ${cfg_arg}
+    "${pca_bin}" ${cfg_arg} ${names_arg}
     local rc=$?
 
     # sync servo limits from runtime.json → gestures.json
@@ -878,6 +1058,12 @@ if changed:
 else:
     print("  No changes to sync.")
 PYEOF
+    fi
+
+    if [ "${rc}" -eq 0 ]; then
+        log "  Next steps:"
+        log "    ./launch.sh show-config       # verify saved values"
+        log "    ./launch.sh tui               # run live with new limits"
     fi
     return $rc
 }
@@ -938,7 +1124,9 @@ run_signal_fallback() {
     log "Mode: SIGNAL (background-mode fallback)"
     kernel_start_background_fallback || fatal "Kernel failed"
     sleep 1
-    cd "$(dirname "${sig_bin}")" && "${sig_bin}"
+    local sig_args
+    sig_args="$(signal_cli_args)"
+    cd "$(dirname "${sig_bin}")" && "${sig_bin}" ${sig_args}
 }
 
 run_tui()    { if require_tmux; then run_tui_tmux;    else warn "tmux not installed — install via './launch.sh setup'"; run_tui_fallback;    fi; }
@@ -986,6 +1174,12 @@ cmd_vendor() {
     # a clean reconfigure so cpcu_ws picks up the real source.
     log "Triggering a clean rebuild so cpcu_ws picks up Mongoose..."
     cmd_build --clean
+
+    ok "Vendor + rebuild complete."
+    log "  Next steps:"
+    log "    ./launch.sh check               # verify everything is ready"
+    log "    ./launch.sh ws                  # launch the web dashboard"
+    log "    ./launch.sh tui --with-ws       # TUI + browser dashboard together"
 }
 
 
@@ -1314,13 +1508,75 @@ cat << 'HELPEOF'
   THROUGH ./launch.sh <command>.
   ═══════════════════════════════════════════════════════════════
 
-  SETUP & BUILD (once per Pi, then once per source change)
+  ORDER OF OPERATIONS  (do these in this sequence on a fresh Pi)
+  ─────────────────────────────────────────────────────────────
+   ┌── Stage 1 — One-time Pi setup ─────────────────────────────┐
+   │   1. ./launch.sh setup            Pi config + isolcpus     │
+   │   2. sudo reboot                  (required after step 1)  │
+   │   3. ./launch.sh setup-audio      I2S DAC for voice cues   │
+   │   4. ./launch.sh setup-uart       UART debug (optional)    │
+   │   5. sudo reboot                  (if 3 or 4 changed boot) │
+   └────────────────────────────────────────────────────────────┘
+   ┌── Stage 2 — Build the tree (once per checkout) ────────────┐
+   │   6. ./launch.sh vendor           fetch Mongoose (web srv) │
+   │   7. ./launch.sh build            cmake + make + install   │
+   │   8. ./launch.sh generate-cues    voice .wav files         │
+   │   9. ./launch.sh check            verify everything ready  │
+   └────────────────────────────────────────────────────────────┘
+   ┌── Stage 3 — Configure (only if defaults need changing) ────┐
+   │  10. ./launch.sh configure --show      see compile knobs   │
+   │  11. ./launch.sh configure --reset --runtime  regen JSON   │
+   │  12. ./launch.sh show-config           print full config   │
+   └────────────────────────────────────────────────────────────┘
+   ┌── Stage 4 — Verify subsystems (before running live) ───────┐
+   │  13. ./launch.sh test-sw          software-only tests      │
+   │  14. ./launch.sh test-ipc         + IPC offset validation  │
+   │  15. ./launch.sh test-hw          + Pi hardware probes     │
+   │  16. ./launch.sh test-nrf         NRF24L01+ self-test      │
+   │  17. ./launch.sh test-pca         interactive servo cal    │
+   │  18. ./launch.sh test-signal-demo signal TUI (synthetic)   │
+   │  19. ./launch.sh test-signal      signal TUI (live, BSAU)  │
+   │  20. ./launch.sh test-safety-demo fault injection demo     │
+   └────────────────────────────────────────────────────────────┘
+   ┌── Stage 5 — Calibrate per operator & tune motors ──────────┐
+   │  21. ./launch.sh test-pca         set MIN/MAX/BIAS/smoother│
+   │  22. ./launch.sh grip-tune        gripper firmness         │
+   │  23. ./launch.sh calibrate        rest noise + velocity    │
+   │      ./launch.sh calibrate --operator NAME  (per-user)     │
+   └────────────────────────────────────────────────────────────┘
+   ┌── Stage 6 — Customise gestures / motors / audio ───────────┐
+   │  24. ./launch.sh add-group  NAME      new classifier       │
+   │  25. ./launch.sh add-motor  NAME CH   new servo            │
+   │  26. ./launch.sh add-gesture [group]  guided wizard        │
+   │  27. ./launch.sh set-model  PATH      pick .pkl            │
+   │  28. ./launch.sh audio voice          enable voice cues    │
+   │  29. ./launch.sh set-channels 0 1 2   EMG channel mask     │
+   │  30. ./launch.sh show-config          verify changes       │
+   └────────────────────────────────────────────────────────────┘
+   ┌── Stage 7 — Run the live system ───────────────────────────┐
+   │  31. ./launch.sh test-system      requirements (live)      │
+   │  32. ./launch.sh tui --audio --with-ws   daily operation   │
+   │      ./launch.sh signal                live signal scope   │
+   │      ./launch.sh collect               dataset capture     │
+   │      ./launch.sh ws                    web dashboard only  │
+   │      ./launch.sh smoother              servo motion exer.  │
+   └────────────────────────────────────────────────────────────┘
+   ┌── Stage 8 — Auto-start at boot (optional) ─────────────────┐
+   │  33. ./launch.sh install-service       kernel as systemd   │
+   │  34. ./launch.sh install-ws-service    web dashboard       │
+   └────────────────────────────────────────────────────────────┘
+
+  ─── REFERENCE — every command grouped by purpose ───────────
+
+  SETUP & BUILD
   ─────────────────────────────────────────────────────────────
     ./launch.sh setup                         Pi one-time config
     ./launch.sh setup-audio                   I2S DAC + speaker
     ./launch.sh setup-uart                    UART debug output
-    ./launch.sh build                         Compile + install
-    ./launch.sh check                         Verify readiness
+    ./launch.sh vendor                        fetch Mongoose
+    ./launch.sh build [--clean]               compile + install
+    ./launch.sh generate-cues                 voice .wav files
+    ./launch.sh check                         verify readiness
 
   RUNNING THE SYSTEM
   ─────────────────────────────────────────────────────────────
@@ -1331,25 +1587,38 @@ cat << 'HELPEOF'
     ./launch.sh tui --audio --uart --with-ws  all features
     ./launch.sh tui --operator NAME           operator velocity profile
     ./launch.sh ws                            web dashboard only
-    ./launch.sh kernel                        kernel only (for systemd)
+    ./launch.sh kernel                        kernel only (systemd path)
     ./launch.sh collect                       dataset capture mode
     ./launch.sh signal                        signal testbench (live)
     ./launch.sh smoother                      servo motion exerciser
-    ./launch.sh pca                           direct PCA9685 calibration
-    ./launch.sh menu                          interactive mode picker
+    ./launch.sh pca                           direct PCA9685 (alias for test-pca)
+    ./launch.sh nrf                           NRF utility/self-test
+    ./launch.sh menu                          interactive picker
     ./launch.sh attach                        re-attach tmux session
     ./launch.sh stop                          stop (safe servo shutdown)
 
   TESTING
   ─────────────────────────────────────────────────────────────
-    ./launch.sh test-sw                       software tests (233 checks)
+    ./launch.sh test-sw                       software tests (233 PASS)
     ./launch.sh test-ipc                      + IPC validation
     ./launch.sh test-hw                       + hardware probes
-    ./launch.sh test-pca                      interactive servo check
+    ./launch.sh test-pca                      interactive servo TUI
+                                              (--names from gestures.json)
+    ./launch.sh test-nrf                      NRF self-test + packet rx
     ./launch.sh test-signal                   live signal integrity
+                                              (--ch-names from gestures.json)
     ./launch.sh test-signal-demo              synthetic signal (no BSAU)
     ./launch.sh test-safety-demo              fault injection demo
-    ./launch.sh test-system                   full system verification
+    ./launch.sh test-system                   live requirements check
+                                              (needs running kernel)
+
+  CALIBRATION & TUNING
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh grip-tune                     gripper firmness wizard
+    ./launch.sh calibrate                     rest noise + velocity (0-10)
+    ./launch.sh calibrate --operator NAME     per-operator profile
+    ./launch.sh calibrate --rest-only         noise floor only
+    ./launch.sh calibrate --vel-only          velocity preference only
 
   EMG CHANNELS
   ─────────────────────────────────────────────────────────────
@@ -1360,35 +1629,28 @@ cat << 'HELPEOF'
 
   SERVO MOTORS
   ─────────────────────────────────────────────────────────────
-    ./launch.sh add-motor Thumb 6             add on PCA channel 6
-    ./launch.sh edit-motor Gripper            edit limits (min/max/neutral)
+    ./launch.sh add-motor    Thumb 6          add on PCA channel 6
+    ./launch.sh edit-motor   Gripper          edit limits (min/max/neutral)
     ./launch.sh rename-motor Gripper Claw     rename (updates all refs)
     ./launch.sh remove-motor Thumb            remove a servo
 
-  GESTURE GROUPS (v5: multiple classifiers, each with own EMG + model)
+  GESTURE GROUPS  (v5: multiple classifiers, each with own EMG + model)
   ─────────────────────────────────────────────────────────────
     ./launch.sh show-config                   show all groups + gestures
-    ./launch.sh add-group gesture_2           create group (asks EMG + model)
-    ./launch.sh remove-group gesture_1        delete entire group
-    ./launch.sh rename-group gesture_0 right  rename a group
+    ./launch.sh show-gestures                 (alias of show-config)
+    ./launch.sh add-group    right_arm        create group (asks EMG + model)
+    ./launch.sh remove-group right_arm        delete entire group
+    ./launch.sh rename-group right_arm right  rename a group
 
-  GESTURES (each gesture belongs to a group)
+  GESTURES  (each gesture belongs to a group)
   ─────────────────────────────────────────────────────────────
     ./launch.sh add-gesture                   add to first group (wizard)
-    ./launch.sh add-gesture gesture_1         add to specific group
+    ./launch.sh add-gesture right_arm         add to specific group
     ./launch.sh edit-gesture flex             change servo mapping
     ./launch.sh rename-gesture hand grip      rename gesture
-    ./launch.sh remove-gesture gesture_0 flex delete gesture from group
+    ./launch.sh remove-gesture right_arm flex delete gesture from group
 
-  CALIBRATION & TUNING
-  ─────────────────────────────────────────────────────────────
-    ./launch.sh grip-tune                     gripper firmness wizard
-    ./launch.sh calibrate                     rest noise + velocity (0-10)
-    ./launch.sh calibrate --operator NAME     per-operator profile
-    ./launch.sh calibrate --rest-only         noise floor only
-    ./launch.sh calibrate --vel-only          velocity preference only
-
-  AUDIO FEEDBACK (PCM5102A + PAM8403 + speaker)
+  AUDIO FEEDBACK  (PCM5102A + PAM8403 + speaker)
   ─────────────────────────────────────────────────────────────
     ./launch.sh audio                         show audio config
     ./launch.sh audio off                     disable audio
@@ -1406,65 +1668,72 @@ cat << 'HELPEOF'
   CONFIGURATION
   ─────────────────────────────────────────────────────────────
     ./launch.sh show-config                   print full system config
-    ./launch.sh configure                     compile-time settings
+    ./launch.sh configure                     compile-time settings (interactive)
     ./launch.sh configure --show              show all compile values
     ./launch.sh configure --diff              changes from defaults
     ./launch.sh configure --reset             restore defaults
+    ./launch.sh configure --reset --runtime   also regenerate runtime.json
+    ./launch.sh configure --<knob> <value>    set one knob
 
-  RELOAD (apply config changes without full restart)
+  RELOAD  (apply config changes without full restart)
   ─────────────────────────────────────────────────────────────
     ./launch.sh reload                        all (runtime + DSP + audio)
     ./launch.sh reload --dsp                  DSP pipeline only
     ./launch.sh reload --audio                audio daemon only
 
-  UART DEBUG (to host PC via USB-UART adapter)
+  UART DEBUG  (to host PC via USB-UART adapter)
   ─────────────────────────────────────────────────────────────
     ./launch.sh setup-uart                    enable UART on Pi 5
     ./launch.sh tui --uart                    run with UART debug
     Host: python3 scripts/uart_monitor.py --port /dev/ttyUSB0
     Host: python3 scripts/uart_monitor.py --port COM3 --log data.csv
 
-  SERVICES (auto-start at boot)
+  SERVICES  (auto-start at boot)
   ─────────────────────────────────────────────────────────────
     ./launch.sh install-service               kernel systemd unit
     ./launch.sh install-ws-service            web dashboard service
     ./launch.sh grant-caps                    re-apply RT capabilities
 
-  EXAMPLES
+  META
   ─────────────────────────────────────────────────────────────
+    ./launch.sh help [<command>]              this message / topic
+    ./launch.sh version                       version string
 
-    # fresh Pi setup (once):
-    ./launch.sh setup && ./launch.sh setup-audio
-    ./launch.sh build && ./launch.sh generate-cues && ./launch.sh check
+  COMMON RECIPES
+  ─────────────────────────────────────────────────────────────
 
     # daily operation:
     ./launch.sh tui --audio --with-ws
 
-    # add a servo motor and use it in a gesture:
-    ./launch.sh add-motor Thumb 6
-    ./launch.sh edit-motor Thumb
-    ./launch.sh add-gesture               # wizard asks which motors
-    ./launch.sh collect                    # record training data
-    ./launch.sh set-model models/new.pkl   # after retraining
+    # full setup of a fresh Pi:
+    ./launch.sh setup && sudo reboot                # then later:
+    ./launch.sh setup-audio && ./launch.sh vendor
+    ./launch.sh build && ./launch.sh generate-cues
+    ./launch.sh check && ./launch.sh tui --audio
+
+    # add a servo motor + use it in a gesture:
+    ./launch.sh add-motor    Thumb 6
+    ./launch.sh edit-motor   Thumb
+    ./launch.sh add-gesture                       # wizard asks which motors
+    ./launch.sh collect                           # record training data
+    ./launch.sh set-model    models/new.pkl       # after retraining
     ./launch.sh reload
 
     # multi-group setup (right arm + left arm):
-    ./launch.sh add-group gesture_0        # EMG 0,1,2 + right_arm.pkl
-    ./launch.sh add-group gesture_1        # EMG 3,4,5 + left_arm.pkl
-    ./launch.sh remove-gesture gesture_0 flex   # remove from group 0
-    ./launch.sh remove-group gesture_1     # delete entire group
+    ./launch.sh add-group right_arm               # EMG 0,1,2 + right_arm.pkl
+    ./launch.sh add-group left_arm                # EMG 3,4,5 + left_arm.pkl
+    ./launch.sh add-gesture right_arm
+    ./launch.sh remove-gesture right_arm flex
 
     # calibrate for a new operator:
     ./launch.sh calibrate --operator ali
     ./launch.sh tui --operator ali --audio
 
-    # rename things:
+    # rename things (all gesture refs follow):
     ./launch.sh rename-motor Gripper Claw
-    ./launch.sh remove-motor Thumb
 
     # switch audio mode:
-    ./launch.sh audio freq
-    ./launch.sh reload --audio
+    ./launch.sh audio freq && ./launch.sh reload --audio
 
     # tune gripper firmness:
     ./launch.sh grip-tune
@@ -1473,7 +1742,7 @@ cat << 'HELPEOF'
     ./launch.sh test-pca
 
     # UART debug to laptop:
-    ./launch.sh setup-uart    # once, then reboot
+    ./launch.sh setup-uart && sudo reboot
     ./launch.sh tui --uart
     # on laptop: python3 scripts/uart_monitor.py --port /dev/ttyUSB0
 
@@ -1960,8 +2229,32 @@ print('yes' if '${group}' in g.get('gesture_groups', {}) else 'no')
 }
 run_generate_cues()  { _run_script generate_voice_cues.sh "$@"; }
 run_set_channels()   { _run_script set_channels.sh "$@"; }
-cmd_setup_audio()    { _run_script setup_audio.sh "$@"; }
-cmd_setup_uart()     { _run_script setup_uart.sh "$@"; }
+cmd_setup_audio() {
+    _run_script setup_audio.sh "$@"
+    local rc=$?
+    if [ "${rc}" -eq 0 ]; then
+        ok "Audio setup complete."
+        log "  Next steps:"
+        log "    sudo reboot                       # if boot config changed"
+        log "    ./launch.sh generate-cues         # render voice .wav files"
+        log "    ./launch.sh audio test            # verify speaker"
+        log "    ./launch.sh tui --audio           # run live with cues"
+    fi
+    return $rc
+}
+cmd_setup_uart() {
+    _run_script setup_uart.sh "$@"
+    local rc=$?
+    if [ "${rc}" -eq 0 ]; then
+        ok "UART setup complete."
+        log "  Next steps:"
+        log "    sudo reboot                       # if boot config changed"
+        log "    ./launch.sh tui --uart            # run with UART debug stream"
+        log "    # on the host PC, in parallel:"
+        log "    python3 scripts/uart_monitor.py --port /dev/ttyUSB0"
+    fi
+    return $rc
+}
 
 # ── show-config: print EVERYTHING ──
 cmd_show_config() {
@@ -2254,72 +2547,190 @@ if fhz > 0:
 }
 
 # ── rename-gesture ──
+# v5: usage is `rename-gesture <group> <old> <new>`. The 2-arg legacy
+# form `rename-gesture <old> <new>` is still accepted: it scans all
+# groups, renames only if exactly one match is found, otherwise asks
+# the user to disambiguate by passing the group name explicitly.
 cmd_rename_gesture() {
-    local old="${1:-}" new="${2:-}"
-    if [ -z "$old" ] || [ -z "$new" ]; then
-        err "Usage: ./launch.sh rename-gesture <old_name> <new_name>"
+    local a1="${1:-}" a2="${2:-}" a3="${3:-}"
+    local group="" old="" new=""
+    if [ -n "$a3" ]; then
+        group="$a1"; old="$a2"; new="$a3"
+    elif [ -n "$a2" ]; then
+        # legacy 2-arg form — let the python helper find the group
+        old="$a1"; new="$a2"
+    else
+        err "Usage: ./launch.sh rename-gesture <group> <old> <new>"
+        echo "  Example: ./launch.sh rename-gesture right_arm flex bend"
+        python3 -c "
+import json
+with open('${GS}') as f: g = json.load(f)
+for gn, gd in g.get('gesture_groups', {}).items():
+    print(f'  {gn}: {list(gd.get(\"gestures\",{}).keys())}')
+"
         exit 1
     fi
     python3 << PYEOF
 import json, sys
 with open("${GS}") as f: g = json.load(f)
-gs = g.get("gestures", {})
-if "${old}" not in gs:
-    print(f"  '${old}' not found.")
+gg = g.get("gesture_groups", {})
+if not gg:
+    print("  No gesture_groups in gestures.json (v5 schema required).")
     sys.exit(1)
-gs["${new}"] = gs.pop("${old}")
+
+group, old, new = "${group}", "${old}", "${new}"
+
+# Resolve group: explicit > unique-match across all groups.
+if not group:
+    matches = [gn for gn, gd in gg.items()
+               if old in gd.get("gestures", {})]
+    if not matches:
+        print(f"  '{old}' not found in any group.")
+        sys.exit(1)
+    if len(matches) > 1:
+        print(f"  '{old}' exists in multiple groups: {matches}")
+        print(f"  Run: ./launch.sh rename-gesture <group> {old} {new}")
+        sys.exit(1)
+    group = matches[0]
+
+if group not in gg:
+    print(f"  Group '{group}' not found. Available: {list(gg.keys())}")
+    sys.exit(1)
+
+gestures = gg[group].setdefault("gestures", {})
+if old not in gestures:
+    print(f"  '{old}' not in group '{group}'. Available: {list(gestures.keys())}")
+    sys.exit(1)
+if new in gestures:
+    print(f"  '{new}' already exists in '{group}'.")
+    sys.exit(1)
+if old == "rest":
+    print(f"  Cannot rename 'rest' (reserved).")
+    sys.exit(1)
+
+# Preserve insertion order: rebuild the dict so 'new' takes 'old's slot.
+new_gestures = {}
+for k, v in gestures.items():
+    new_gestures[new if k == old else k] = v
+gg[group]["gestures"] = new_gestures
+
 with open("${GS}", "w") as f: json.dump(g, f, indent=4)
-print("  \033[32m✓\033[0m Renamed '${old}' → '${new}'.")
-print("  \033[33m⚠\033[0m Model classes must match — retrain if class name changed.")
+print(f"  \033[32m✓\033[0m Renamed '{old}' → '{new}' in group '{group}'.")
+print(f"  \033[33m⚠\033[0m Model classes must match — retrain if the class label changed.")
 PYEOF
 }
 
 # ── edit-gesture (change servo mapping for existing gesture) ──
+# v5: usage is `edit-gesture <group> <name>`. 1-arg legacy form
+# `edit-gesture <name>` works when the gesture exists in exactly one
+# group. Servo names accept the legacy `S#_Foo` prefix (auto-stripped),
+# same convention as add_gesture.sh, and are validated against
+# servo_channels so a typo can't silently break the gesture.
 cmd_edit_gesture() {
-    local name="${1:-}"
-    if [ -z "$name" ]; then
-        err "Usage: ./launch.sh edit-gesture <name>"
+    local a1="${1:-}" a2="${2:-}"
+    local group="" name=""
+    if [ -n "$a2" ]; then
+        group="$a1"; name="$a2"
+    elif [ -n "$a1" ]; then
+        name="$a1"  # legacy — resolve group below
+    else
+        err "Usage: ./launch.sh edit-gesture <group> <name>"
+        echo "  Example: ./launch.sh edit-gesture right_arm flex"
         python3 -c "
 import json
 with open('${GS}') as f: g = json.load(f)
-print('  Gestures: ' + ', '.join(g.get('gestures',{}).keys()))
+for gn, gd in g.get('gesture_groups', {}).items():
+    print(f'  {gn}: {list(gd.get(\"gestures\",{}).keys())}')
 "
         exit 1
     fi
-    python3 -c "
+
+    # Resolve group + dump current state. The script's stdout here also
+    # captures the resolved group so the shell can read it back.
+    local resolved
+    resolved=$(python3 << PYEOF
 import json, sys
-with open('${GS}') as f: g = json.load(f)
-if '${name}' not in g.get('gestures',{}):
-    print(f\"  '${name}' not found.\"); sys.exit(1)
-gd = g['gestures']['${name}']
-print(f\"  Gesture: ${name}  mode={gd.get('mode','?')}\")
-print(f\"  Motors: {list(g.get('servo_channels',{}).keys())}\")
-print(f\"  Current: {gd.get('channels',{})}\")
-"
-    echo "  Enter motor mappings (MotorName Rate), empty to finish:"
+with open("${GS}") as f: g = json.load(f)
+gg = g.get("gesture_groups", {})
+group, name = "${group}", "${name}"
+if not group:
+    matches = [gn for gn, gd in gg.items()
+               if name in gd.get("gestures", {})]
+    if not matches:
+        print(f"ERR:'{name}' not found in any group.")
+        sys.exit(1)
+    if len(matches) > 1:
+        print(f"ERR:'{name}' in multiple groups: {matches}. Pass the group explicitly.")
+        sys.exit(1)
+    group = matches[0]
+if group not in gg or name not in gg[group].get("gestures", {}):
+    print(f"ERR:'{name}' not in group '{group}'.")
+    sys.exit(1)
+gd       = gg[group]["gestures"][name]
+print(f"GROUP={group}")
+print(f"  Gesture:        {name}  (group: {group}, mode: {gd.get('mode','?')})")
+print(f"  Available motors: {list(g.get('servo_channels',{}).keys())}")
+print(f"  Current channels: {gd.get('channels',{})}")
+PYEOF
+)
+    local rc=$?
+    if [ $rc -ne 0 ] || echo "${resolved}" | grep -q '^ERR:'; then
+        echo "${resolved}" | sed 's/^ERR://'
+        exit 1
+    fi
+    # Print everything the python helper produced except the GROUP= line,
+    # then extract the resolved group name for the write step.
+    echo "${resolved}" | grep -v '^GROUP='
+    group=$(echo "${resolved}" | sed -n 's/^GROUP=//p')
+
+    echo "  Enter motor mappings (MotorName Rate), empty line to finish:"
+    echo "  Legacy 'S#_Name' tokens are auto-stripped."
     local channels="{"
     local first=1
     while true; do
         read -rp "  Motor Rate: " line
         [ -z "$line" ] && break
-        local mname=$(echo "$line" | awk '{print $1}')
-        local rate=$(echo "$line" | awk '{print $2}')
+        local mname rate snap
+        mname=$(echo "$line" | awk '{print $1}')
+        rate=$(echo "$line"  | awk '{print $2}')
         [ -z "$rate" ] && { echo "  Format: MotorName Rate"; continue; }
-        [ $first -eq 0 ] && channels="${channels},"
+        # Strip legacy S#_ prefix
+        local m_stripped
+        m_stripped=$(echo "${mname}" | sed -E 's/^S[0-9]+_//')
+        [ "${m_stripped}" != "${mname}" ] && \
+            echo "  ↳ stripped to '${m_stripped}'"
+        mname="${m_stripped}"
+        # Validate against current servo_channels
+        if ! python3 - "${GS}" "${mname}" << 'PYV' 2>/dev/null
+import json, sys
+with open(sys.argv[1]) as f: g = json.load(f)
+sys.exit(0 if sys.argv[2] in g.get("servo_channels", {}) else 1)
+PYV
+        then
+            warn "'${mname}' isn't a known motor — skipping."
+            continue
+        fi
         read -rp "  ${mname} snap? (y/n) [n]: " sn
-        local snap="false"
-        [[ "$sn" =~ ^[yY] ]] && snap="true"
+        snap="False"
+        [[ "$sn" =~ ^[yY] ]] && snap="True"
+        [ $first -eq 0 ] && channels="${channels},"
         channels="${channels} \"${mname}\": {\"rate_us_s\": ${rate}, \"snap\": ${snap}}"
         first=0
     done
     channels="${channels} }"
-    [ "$first" -eq 1 ] && { echo "  No changes."; return; }
+    if [ "$first" -eq 1 ]; then
+        echo "  No changes."
+        return
+    fi
+
     python3 -c "
 import json
 with open('${GS}') as f: g = json.load(f)
-g['gestures']['${name}']['channels'] = ${channels}
+# The inline channels dict uses Python booleans (True/False); convert
+# them to JSON booleans during dump.
+g['gesture_groups']['${group}']['gestures']['${name}']['channels'] = ${channels}
 with open('${GS}', 'w') as f: json.dump(g, f, indent=4)
-print('  \033[32m✓\033[0m Updated.')
+print('  \033[32m✓\033[0m Updated ${name} in group ${group}.')
 "
 }
 
