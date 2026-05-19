@@ -1363,13 +1363,20 @@ cat << 'HELPEOF'
     ./launch.sh add-motor Thumb 6             add on PCA channel 6
     ./launch.sh edit-motor Gripper            edit limits (min/max/neutral)
     ./launch.sh rename-motor Gripper Claw     rename (updates all refs)
+    ./launch.sh remove-motor Thumb            remove a servo
 
-  GESTURES
+  GESTURE GROUPS (v5: multiple classifiers, each with own EMG + model)
+  ─────────────────────────────────────────────────────────────
+    ./launch.sh show-config                   show all groups + gestures
+    ./launch.sh add-group gesture_2           create group (asks EMG + model)
+    ./launch.sh remove-group gesture_1        delete entire group
+
+  GESTURES (each gesture belongs to a group)
   ─────────────────────────────────────────────────────────────
     ./launch.sh add-gesture                   guided wizard (+ audio)
     ./launch.sh edit-gesture flex             change servo mapping
     ./launch.sh rename-gesture hand grip      rename gesture
-    ./launch.sh remove-gesture biceps         delete gesture
+    ./launch.sh remove-gesture gesture_0 flex delete gesture from group
 
   CALIBRATION & TUNING
   ─────────────────────────────────────────────────────────────
@@ -1439,11 +1446,11 @@ cat << 'HELPEOF'
     ./launch.sh set-model models/new.pkl   # after retraining
     ./launch.sh reload
 
-    # upgrade from 3 to 5 EMG channels:
-    ./launch.sh set-channels 0 1 2 3 4
-    ./launch.sh collect
-    ./launch.sh set-model models/model_5ch.pkl
-    ./launch.sh reload
+    # multi-group setup (right arm + left arm):
+    ./launch.sh add-group gesture_0        # EMG 0,1,2 + right_arm.pkl
+    ./launch.sh add-group gesture_1        # EMG 3,4,5 + left_arm.pkl
+    ./launch.sh remove-gesture gesture_0 flex   # remove from group 0
+    ./launch.sh remove-group gesture_1     # delete entire group
 
     # calibrate for a new operator:
     ./launch.sh calibrate --operator ali
@@ -1451,7 +1458,7 @@ cat << 'HELPEOF'
 
     # rename things:
     ./launch.sh rename-motor Gripper Claw
-    ./launch.sh rename-gesture hand grip
+    ./launch.sh remove-motor Thumb
 
     # switch audio mode:
     ./launch.sh audio freq
@@ -1459,6 +1466,9 @@ cat << 'HELPEOF'
 
     # tune gripper firmness:
     ./launch.sh grip-tune
+
+    # servo calibration (syncs to gestures.json on exit):
+    ./launch.sh test-pca
 
     # UART debug to laptop:
     ./launch.sh setup-uart    # once, then reboot
