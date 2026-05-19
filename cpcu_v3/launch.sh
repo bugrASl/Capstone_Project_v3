@@ -842,19 +842,44 @@ run_pca() {
     log "Controls: arrows / m / M / n / 0 / A / q — press '?' inside for help"
     sleep 0.5
     trap - EXIT INT TERM
-    cd "$(dirname "${pca_bin}")"
-    # Resolve config path explicitly — the cd above breaks the relative
-    # fallback ("config/runtime.json") inside pca_testbench, and the
-    # /opt/cpcu/config.json symlink may be stale. CPCU_ROOT is always
-    # the repo root, so this is the most reliable source.
+    local cfg_arg=""
     if [ -r "${CPCU_ROOT}/config/runtime.json" ]; then
-        exec "${pca_bin}" --config "${CPCU_ROOT}/config/runtime.json"
+        cfg_arg="--config ${CPCU_ROOT}/config/runtime.json"
     elif [ -r "/opt/cpcu/config.json" ]; then
-        exec "${pca_bin}" --config "/opt/cpcu/config.json"
+        cfg_arg="--config /opt/cpcu/config.json"
     else
         warn "No runtime.json found — pca_testbench will use compile-time defaults"
-        exec "${pca_bin}"
     fi
+    cd "$(dirname "${pca_bin}")"
+    "${pca_bin}" ${cfg_arg}
+    local rc=$?
+
+    # sync servo limits from runtime.json → gestures.json
+    if [ -f "${CPCU_ROOT}/config/runtime.json" ] && [ -f "${GS}" ]; then
+        log "Syncing servo limits from runtime.json → gestures.json..."
+        python3 << PYEOF
+import json
+with open("${CPCU_ROOT}/config/runtime.json") as f: rt = json.load(f)
+with open("${GS}") as f: gs = json.load(f)
+mn = rt.get("servo_min_us", [])
+mx = rt.get("servo_max_us", [])
+bias = rt.get("servo_bias_us", [])
+# sort servo_channels by pca_ch to match array indices
+servos = sorted(gs.get("servo_channels", {}).items(), key=lambda x: x[1].get("pca_ch", 0))
+changed = 0
+for i, (name, sd) in enumerate(servos):
+    if i < len(mn) and sd.get("min_us") != mn[i]:
+        sd["min_us"] = mn[i]; changed += 1
+    if i < len(mx) and sd.get("max_us") != mx[i]:
+        sd["max_us"] = mx[i]; changed += 1
+if changed:
+    with open("${GS}", "w") as f: json.dump(gs, f, indent=4)
+    print(f"  \033[32m✓\033[0m Synced {changed} values to gestures.json")
+else:
+    print("  No changes to sync.")
+PYEOF
+    fi
+    return $rc
 }
 
 run_nrf() {
@@ -2208,6 +2233,34 @@ print("  Tune limits with: ./launch.sh edit-motor ${name}")
 PYEOF
 }
 
+# ── remove-motor ──
+cmd_remove_motor() {
+    local name="${1:-}"
+    if [ -z "$name" ]; then
+        err "Usage: ./launch.sh remove-motor <name>"
+        python3 -c "
+import json
+with open('${GS}') as f: g = json.load(f)
+print('  Motors: ' + ', '.join(g.get('servo_channels',{}).keys()))
+"
+        exit 1
+    fi
+    python3 << PYEOF
+import json, sys
+with open("${GS}") as f: g = json.load(f)
+sc = g.get("servo_channels", {})
+if "${name}" not in sc:
+    print(f"  Motor '${name}' not found. Available: {list(sc.keys())}")
+    sys.exit(1)
+refs = [gn for gn, gd in g.get("gestures", {}).items() if "${name}" in gd.get("channels", {})]
+if refs:
+    print(f"  \033[33m⚠\033[0m Gestures {refs} reference '${name}' — they will break.")
+del sc["${name}"]
+with open("${GS}", "w") as f: json.dump(g, f, indent=4)
+print(f"  \033[32m✓\033[0m Removed motor '${name}'.")
+PYEOF
+}
+
 # ── edit-motor (change limits) ──
 cmd_edit_motor() {
     local name="${1:-}"
@@ -2428,6 +2481,7 @@ case "${MODE}" in
     rename-gesture)         cmd_rename_gesture "$@" ;;
     edit-gesture)           cmd_edit_gesture "$@" ;;
     add-motor)              cmd_add_motor "$@" ;;
+    remove-motor)           cmd_remove_motor "$@" ;;
     edit-motor)             cmd_edit_motor "$@" ;;
     rename-motor)           cmd_rename_motor "$@" ;;
     set-channels)           run_set_channels "$@" ;;
