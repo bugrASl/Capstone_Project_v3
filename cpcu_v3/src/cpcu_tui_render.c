@@ -782,6 +782,160 @@ void draw_page_overview(int r, IPC_Context *ipc,
     }
     r += 2;
 
+    /*==================== END-TO-END LATENCY BREAKDOWN ==================
+     * Always shown on the OVERVIEW page so the operator can see the
+     * full SYS-REQ-01 budget at a glance, with each stage labelled and
+     * described. Constants come from per-segment datasheet/wall-clock
+     * probes (cpcu_dsp.py's LAT_*_US set, mirrored in cpcu_tui.h's
+     * TUI_LAT_*_US set). Measurements come from cpcu_dsp.py via the
+     * IPC_DSPExport padding region.
+     *
+     * Math (matches Python's _print_latency_waterfall and DSP-page
+     * waterfall — the three views render the same total):
+     *   E2E = BSAU_const               (ADC_PACK + WIRELESS)
+     *       + lat_pkt_us                (SPI_UNPACK + ring + DSP + IPC)
+     *       + SMOOTHER_I2C_const
+     *       + SERVO_MECH_const
+     */
+    {
+        uint32_t lat_pkt_us  = tui_lat_pkt_to_servo_us(ipc->dsp_export);
+        uint32_t lat_dwell   = tui_lat_ring_dwell_us  (ipc->dsp_export);
+        uint32_t lat_dsp     = tui_lat_dsp_compute_us (ipc->dsp_export);
+
+        uint32_t bsau_const  = TUI_LAT_ADC_PACK_US + TUI_LAT_WIRELESS_US;
+        uint32_t srvo_const  = TUI_LAT_SMOOTHER_I2C_US + TUI_LAT_SERVO_MECH_US;
+
+        draw_hline(r - 1, 0, g_tui_w);
+        draw_section(r, 1, "END-TO-END LATENCY  (EMG event → servo motion, budget < 300 ms)");
+        r++;
+
+        /*---- BSAU → CPCU sensor path (fixed) ----*/
+        attron(COLOR_PAIR(CP_DIM));
+        mvprintw(r, 1, "┌─ BSAU → CPCU (sensor path) ───────────────────────────────────────────");
+        attroff(COLOR_PAIR(CP_DIM));
+        r++;
+        mvprintw(r, 1, "│ ADC + WL_Pack:");
+        attron(COLOR_PAIR(CP_CYAN));   printw("  %4u us", TUI_LAT_ADC_PACK_US);  attroff(COLOR_PAIR(CP_CYAN));
+        attron(COLOR_PAIR(CP_DIM));
+        printw("  (const)   STM32 8-ch ADC sampling + 32 B frame pack");
+        attroff(COLOR_PAIR(CP_DIM));
+        r++;
+        mvprintw(r, 1, "│ Wireless TX+ACK:");
+        attron(COLOR_PAIR(CP_CYAN));   printw("%4u us", TUI_LAT_WIRELESS_US);    attroff(COLOR_PAIR(CP_CYAN));
+        attron(COLOR_PAIR(CP_DIM));
+        printw("  (const)   NRF24L01+ ESB SPI upload + 2 Mbps air + auto-ACK");
+        attroff(COLOR_PAIR(CP_DIM));
+        r++;
+        mvprintw(r, 1, "│ BSAU subtotal:");
+        attron(COLOR_PAIR(CP_GOOD));   printw("  %4u us", bsau_const);           attroff(COLOR_PAIR(CP_GOOD));
+        attron(COLOR_PAIR(CP_DIM));
+        printw("  (datasheet sum)");
+        attroff(COLOR_PAIR(CP_DIM));
+        r++;
+
+        /*---- CPCU compute (measured by cpcu_dsp.py) ----*/
+        attron(COLOR_PAIR(CP_DIM));
+        mvprintw(r, 1, "├─ CPCU (compute on Pi 5, isolcpus 1-3) ───────────────────────────────");
+        attroff(COLOR_PAIR(CP_DIM));
+        r++;
+        if(lat_pkt_us > 0)
+        {
+            int cp_pkt = (lat_pkt_us > 100000) ? CP_WARN : CP_GOOD;
+            mvprintw(r, 1, "│ pkt -> motor IPC:");
+            attron(COLOR_PAIR(cp_pkt));
+            printw("%5u us", lat_pkt_us);
+            attroff(COLOR_PAIR(cp_pkt));
+            attron(COLOR_PAIR(CP_DIM));
+            printw("  (meas)    rx_time_us -> motor cmd write (%.1f ms)",
+                   lat_pkt_us / 1000.0f);
+            attroff(COLOR_PAIR(CP_DIM));
+            r++;
+            mvprintw(r, 3, " - SPI unpack:");
+            attron(COLOR_PAIR(CP_DIM));
+            printw("    %4u us  (const, in meas)  NRF SPI rx + WL_Unpack + IPC push",
+                   TUI_LAT_SPI_UNPACK_US);
+            attroff(COLOR_PAIR(CP_DIM));
+            r++;
+            mvprintw(r, 3, " - Ring dwell:");
+            attron(COLOR_PAIR(CP_CYAN));   printw("    %4u us", lat_dwell);      attroff(COLOR_PAIR(CP_CYAN));
+            attron(COLOR_PAIR(CP_DIM));
+            printw("  (meas)            Samples wait in IPC ring before DSP drains");
+            attroff(COLOR_PAIR(CP_DIM));
+            r++;
+            int cp_dsp = (lat_dsp > 50000) ? CP_WARN : CP_CYAN;
+            mvprintw(r, 3, " - DSP compute:");
+            attron(COLOR_PAIR(cp_dsp));    printw("   %4u us", lat_dsp);         attroff(COLOR_PAIR(cp_dsp));
+            attron(COLOR_PAIR(CP_DIM));
+            printw("  (meas)            HP+LP+notch filter + features + RandomForest");
+            attroff(COLOR_PAIR(CP_DIM));
+            r++;
+        }
+        else
+        {
+            mvprintw(r, 1, "│ pkt -> motor IPC:");
+            attron(COLOR_PAIR(CP_WARN));
+            printw("  N/A   ");
+            attroff(COLOR_PAIR(CP_WARN));
+            attron(COLOR_PAIR(CP_DIM));
+            printw("  (no BSAU packets yet — waiting for first inference window)");
+            attroff(COLOR_PAIR(CP_DIM));
+            r++;
+        }
+
+        /*---- CPCU → Robotic Arm actuation (fixed) ----*/
+        attron(COLOR_PAIR(CP_DIM));
+        mvprintw(r, 1, "├─ CPCU → Robotic Arm (actuation path) ────────────────────────────────");
+        attroff(COLOR_PAIR(CP_DIM));
+        r++;
+        mvprintw(r, 1, "│ Smoother + I2C:");
+        attron(COLOR_PAIR(CP_CYAN));   printw(" %4u us", TUI_LAT_SMOOTHER_I2C_US); attroff(COLOR_PAIR(CP_CYAN));
+        attron(COLOR_PAIR(CP_DIM));
+        printw("  (const)   50 Hz tick: SMOOTH_Update + PCA9685 I2C 6 servos");
+        attroff(COLOR_PAIR(CP_DIM));
+        r++;
+        mvprintw(r, 1, "│ Servo mechanical:");
+        attron(COLOR_PAIR(CP_CYAN));   printw("%5u us", TUI_LAT_SERVO_MECH_US);  attroff(COLOR_PAIR(CP_CYAN));
+        attron(COLOR_PAIR(CP_DIM));
+        printw("  (const)   SG90 step response (~15 ms typical at no-load)");
+        attroff(COLOR_PAIR(CP_DIM));
+        r++;
+        mvprintw(r, 1, "│ Arm subtotal:");
+        attron(COLOR_PAIR(CP_GOOD));   printw("   %5u us", srvo_const);          attroff(COLOR_PAIR(CP_GOOD));
+        attron(COLOR_PAIR(CP_DIM));
+        printw("  (datasheet sum)");
+        attroff(COLOR_PAIR(CP_DIM));
+        r++;
+
+        /*---- E2E grand total ----*/
+        attron(COLOR_PAIR(CP_DIM));
+        mvprintw(r, 1, "└─");
+        attroff(COLOR_PAIR(CP_DIM));
+        if(lat_pkt_us > 0)
+        {
+            uint32_t e2e_us = bsau_const + lat_pkt_us + srvo_const;
+            float    e2e_ms = e2e_us / 1000.0f;
+            int e2e_cp = (e2e_ms < 200.0f) ? CP_GOOD
+                       : (e2e_ms < 300.0f) ? CP_WARN
+                       :                     CP_BAD;
+            mvprintw(r, 3, "E2E TOTAL: ");
+            attron(COLOR_PAIR(e2e_cp) | A_BOLD);
+            printw("%6.1f ms", e2e_ms);
+            attroff(COLOR_PAIR(e2e_cp) | A_BOLD);
+            attron(COLOR_PAIR(CP_DIM));
+            printw("  (BSAU %u + CPCU %u + arm %u us)   budget < 300 ms",
+                   bsau_const, lat_pkt_us, srvo_const);
+            attroff(COLOR_PAIR(CP_DIM));
+        }
+        else
+        {
+            mvprintw(r, 3, "E2E TOTAL: ");
+            attron(COLOR_PAIR(CP_DIM));
+            printw("waiting for first DSP measurement (BSAU not transmitting)");
+            attroff(COLOR_PAIR(CP_DIM));
+        }
+        r += 2;
+    }
+
     uint32_t export_seq = atomic_load(&ipc->dsp_export->update_seq);
     if(export_seq > 0)
     {
@@ -1119,27 +1273,46 @@ void draw_page_dsp(int r, IPC_Context *ipc)
             motor_age_ms > 100 ? CP_WARN : CP_GOOD, "%u ms  (since last write)", motor_age_ms);
     r += 2;
 
-    if(export_seq > 0)
+    if(dsp_rdy)
     {
+        /* Pull the export region defensively — when DSP is ready but
+         * hasn't published yet (no BSAU samples / first window still
+         * filling), update_seq is 0 and all the export fields are
+         * zero. We still draw the section so the operator can see the
+         * pipeline is wired up and waiting, instead of a confusing
+         * "DSP export not available" message that contradicts the
+         * "DSP ready: YES" line above. */
         char gname[IPC_MAX_GESTURE_NAME];
         memcpy(gname, (const void *)ipc->dsp_export->gesture_name, sizeof(gname));
         gname[IPC_MAX_GESTURE_NAME - 1] = '\0';
+        if(!gname[0]) snprintf(gname, sizeof(gname), "(no data)");
+
         uint8_t  active = ipc->dsp_export->active_class;
         uint32_t inf_us = ipc->dsp_export->inference_time_us;
+        bool     have_pred = (export_seq > 0);
 
         draw_hline(r - 1, 0, g_tui_w);
         draw_section(r, 1, "ACTIVE GESTURE");
         r++;
 
         mvprintw(r, 3, ">> ");
-        attron(COLOR_PAIR(CP_MAGENTA) | A_BOLD);
+        attron(COLOR_PAIR(have_pred ? CP_MAGENTA : CP_DIM) | A_BOLD);
         printw("%-16s", gname);
-        attroff(COLOR_PAIR(CP_MAGENTA) | A_BOLD);
+        attroff(COLOR_PAIR(have_pred ? CP_MAGENTA : CP_DIM) | A_BOLD);
         printw("   confidence: ");
-        float ac = ipc->dsp_export->class_confidence[active];
-        attron(COLOR_PAIR(ac > 0.8f ? CP_GOOD : ac > 0.5f ? CP_WARN : CP_BAD) | A_BOLD);
-        printw("%3d %%", (int)(ac * 100));
-        attroff(COLOR_PAIR(ac > 0.8f ? CP_GOOD : ac > 0.5f ? CP_WARN : CP_BAD) | A_BOLD);
+        float ac = have_pred ? ipc->dsp_export->class_confidence[active] : 0.0f;
+        if(have_pred)
+        {
+            attron(COLOR_PAIR(ac > 0.8f ? CP_GOOD : ac > 0.5f ? CP_WARN : CP_BAD) | A_BOLD);
+            printw("%3d %%", (int)(ac * 100));
+            attroff(COLOR_PAIR(ac > 0.8f ? CP_GOOD : ac > 0.5f ? CP_WARN : CP_BAD) | A_BOLD);
+        }
+        else
+        {
+            attron(COLOR_PAIR(CP_DIM));
+            printw("  --");
+            attroff(COLOR_PAIR(CP_DIM));
+        }
         printw("   inf time: ");
         attron(COLOR_PAIR(inf_us > 50000 ? CP_WARN : CP_CYAN));
         printw("%u us", inf_us);
@@ -1310,7 +1483,8 @@ void draw_page_dsp(int r, IPC_Context *ipc)
     {
         r++;
         attron(COLOR_PAIR(CP_WARN));
-        mvprintw(r, 1, "DSP export not available (Python cpcu_dsp.py not running?)");
+        mvprintw(r, 1, "cpcu_dsp.py is not running (dsp_ready = NO). "
+                       "Check the KERNEL window for spawn errors.");
         attroff(COLOR_PAIR(CP_WARN));
         r += 2;
     }
