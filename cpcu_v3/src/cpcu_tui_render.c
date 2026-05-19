@@ -73,9 +73,13 @@ const uint16_t  SERVO_MIN[]     =   {  498, 1074, 1074, 1001, 1001,  976 };
 const uint16_t  SERVO_MAX[]     =   { 2500, 1953, 1953, 2002, 2002, 1733 };
 
 const char     *CLS_NAMES[]     =   {
-    /* Indices 0-3 must match model.classes_ order in aleynask.pkl */
+    /* Indices 0-3: model.classes_ order is scikit-learn alphabetical
+     * since RandomForestClassifier sorts string labels at fit time.
+     * Active model is models/arm.pkl (shared between right_arm and
+     * left_arm groups — same muscles, same classifier). */
     "EXT",    "FLEX",   "HAND",   "REST",
-    /* Indices 4-9: additional labels for dataset capture (future training) */
+    /* Indices 4-9: extra labels available in the DATASET capture page
+     * for future multi-gesture training runs. Not used at inference. */
     "A.BND<", "A.BND=", "A.BND>", "A.SLO",  "A.FST",  "BICEP"
 };
 
@@ -2517,8 +2521,8 @@ void draw_page_config(int r, IPC_Context *ipc)
     draw_lv(r, 1,       "Servos:",        CP_CYAN, "%d × SG90  (1.0-2.0 ms pulse)", IPC_NUM_SERVOS);
     draw_lv(r, g_col_r, "Stride:",        CP_CYAN, "200 samples  (50 %% overlap)");
     r++;
-    draw_lv(r, 1,       "Slew limit:",    CP_CYAN, "2000 us/s  (1200 us/s on gripper)");
-    draw_lv(r, g_col_r, "Feature extr:",  CP_CYAN, "MAV, WL, ZC, SSC, RMS, spectral");
+    draw_lv(r, 1,       "Slew limit:",    CP_CYAN, "3000 us/s joints, 1500 us/s gripper  (50%% mech max)");
+    draw_lv(r, g_col_r, "Feature extr:",  CP_CYAN, "RMS, var, WL, env_mean, MAV, ZC, SSC  (7/ch)");
     r++;
     draw_lv(r, 1,       "Safety cmd:",    CP_CYAN, "Servos → neutral (1500 us) on SAFE");
     draw_lv(r, g_col_r, "Classifier:",    CP_CYAN, "RandomForest (scikit-learn)");
