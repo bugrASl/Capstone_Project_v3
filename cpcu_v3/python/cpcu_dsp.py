@@ -182,7 +182,7 @@ def load_gestures(path=GESTURES_PATH):
             "emg_channels": [0, 1, 2],
             "confidence":   default_conf,
             "hysteresis":   default_hyst,
-            "model_path":   "models/right_arm.pkl",
+            "model_path":   "models/arm.pkl",
         },
         {
             "name":         "left_arm",
@@ -195,7 +195,7 @@ def load_gestures(path=GESTURES_PATH):
             "emg_channels": [3, 4, 5],
             "confidence":   default_conf,
             "hysteresis":   default_hyst,
-            "model_path":   "models/left_arm.pkl",
+            "model_path":   "models/arm.pkl",
         },
     ]
 
@@ -209,7 +209,16 @@ def load_gestures(path=GESTURES_PATH):
 
     # Servo limits — flat, single arm
     servo_ch    = gs.get("servo_channels", {})
-    name_to_idx = {n: d["pca_ch"] for n, d in servo_ch.items()}
+    # Build the logical-slot mapping. Internally we use 0..NUM_SERVOS-1
+    # as the index into all 6-element arrays (rates, motor_cmd, etc).
+    # The slot order is the gestures.json servo_channels declaration
+    # order, sorted by pca_ch ascending — so the slot index is stable
+    # regardless of what physical PCA9685 channel each servo is wired
+    # to. Physical channel routing happens entirely in cpcu_io.c via
+    # IPC_RuntimeConfig::servo_pca_ch, which launch.sh keeps in sync.
+    sorted_servos = sorted(servo_ch.items(),
+                           key=lambda x: x[1].get("pca_ch", 0))
+    name_to_idx = {n: slot for slot, (n, _d) in enumerate(sorted_servos)}
     _update_servo_limits(servo_ch)
 
     # Build the list of group dicts (schema v5 first, v4 fallback)
@@ -560,10 +569,29 @@ def confidence_scale(conf_frac, floor, ceil, curve="quadratic"):
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  UART DEBUG (optional)
+#  UART STREAMING — for the AI team's host-side monitor.py
 # ══════════════════════════════════════════════════════════════════════
+#
+# Two payload formats are multiplexed on the same /dev/ttyAMA0 link at
+# 921600 baud, distinguished by a single leading character:
+#
+#   1. RAW-SAMPLE LINE  (no prefix, just CSV ints)
+#         "<ch0>,<ch1>,<ch2>,<ch3>,<ch4>,<ch5>\n"
+#      Emitted at 2 kHz — one line per BSAU sample-pair entry (after
+#      ring drain). This is byte-for-byte the format predictX.py reads
+#      from BSAU's UART, so monitor.py is a direct port: same parser,
+#      same filter chain, same model invocation.
+#
+#   2. PREDICTION LINE  (prefix '#', for sanity / debug overlay)
+#         "#pred,<ts_ms>,<group>,<gesture>,<conf>\n"
+#      Emitted at the inference rate (~5 Hz). monitor.py can ignore
+#      these (lines starting with '#' don't parse as 6-int CSV).
+#
+# Budget: 6 channels × ~5 chars × 2000 lines/s ≈ 60 kB/s, well under
+# 921600 baud's 92 kB/s usable bandwidth.
 
 UART_PORT = os.environ.get("CPCU_UART_DEBUG", "")
+UART_BAUD = int(os.environ.get("CPCU_UART_BAUD", "921600"))
 _uart     = None
 
 
@@ -574,20 +602,48 @@ def _uart_init():
         return
     try:
         import serial
-        _uart = serial.Serial(UART_PORT, 115200, timeout=0)
-        print(f"[DSP] UART debug → {UART_PORT}", flush=True)
+        _uart = serial.Serial(UART_PORT, UART_BAUD, timeout=0)
+        print(f"[DSP] UART stream → {UART_PORT} @ {UART_BAUD} baud", flush=True)
     except Exception as e:
         print(f"[DSP] UART: {e}", flush=True)
 
 
-def _uart_send(gesture, conf, feats):
-    """Emit ``ts,gesture,conf,f0,f1,...\\n`` for an attached USB-UART logger."""
+def _uart_stream_samples(samples_batch):
+    """Stream raw ADC samples line-by-line in predictX-compatible CSV.
+
+    ``samples_batch`` is the 3-D BSAU array shape (n_entries, 2, 8) that
+    cpcu_io drained from the ring. We flatten across (entries × pairs)
+    to write one CSV line per actual 2 kHz sample. Only channels 0..5
+    are emitted (matches the 6-channel BSAU front-end)."""
+    if _uart is None or samples_batch is None:
+        return
+    try:
+        # samples_batch[ei, si, ch] -> int. Write all (ei, si) rows
+        # but only the 6 wired channels.
+        n_e, n_s, _n_ch = samples_batch.shape
+        buf = []
+        for ei in range(n_e):
+            for si in range(n_s):
+                row = samples_batch[ei, si]
+                buf.append(f"{row[0]},{row[1]},{row[2]},{row[3]},{row[4]},{row[5]}")
+        if buf:
+            _uart.write(("\n".join(buf) + "\n").encode())
+    except Exception:
+        pass
+
+
+def _uart_send_prediction(group_name, gesture, conf):
+    """Emit a one-line prediction summary for monitor.py's debug overlay.
+
+    Format: ``#pred,<ts_ms>,<group>,<gesture>,<conf>\\n``. The leading
+    ``#`` makes monitor.py's CSV parser skip it (it's not 6 ints), so
+    the prediction line is purely informational — the host re-runs
+    inference locally on the raw stream for ground-truth comparison."""
     if _uart is None:
         return
     try:
-        ts  = int(time.time() * 1000)
-        csv = ",".join(f"{v:.6f}" for v in feats)
-        _uart.write(f"{ts},{gesture},{conf:.3f},{csv}\n".encode())
+        ts = int(time.time() * 1000)
+        _uart.write(f"#pred,{ts},{group_name},{gesture},{conf:.3f}\n".encode())
     except Exception:
         pass
 
@@ -743,6 +799,11 @@ def _drain_ring_into_groups(ipc, group_states, rx_times, seq_history):
     samples   = batch['samples']
     batch_seq = batch.get('seq')
     batch_rx  = batch.get('rx_time_us')
+
+    # Mirror the raw 2 kHz sample stream to the AI team's UART
+    # so monitor.py on the host PC sees the exact same data the
+    # filter+ML pipeline does. No-op when CPCU_UART_DEBUG is unset.
+    _uart_stream_samples(samples[:n])
 
     for ei in range(n):
         for si in range(2):                                    # 2 samples / pkt
@@ -1094,8 +1155,9 @@ def run_inference(verbose=False, operator="default"):
                     _publish_primary_state(ipc, gst)
 
             primary = group_states[0]
-            _uart_send(primary.current_state,
-                       primary.conf_pct / 100.0, [])
+            _uart_send_prediction(primary.name,
+                                  primary.current_state,
+                                  primary.conf_pct / 100.0)
 
             # 4. publish DSP export
             t_dsp_s = time.monotonic() - t_dsp_start

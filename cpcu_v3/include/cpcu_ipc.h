@@ -230,6 +230,14 @@ typedef struct __attribute__((aligned(64)))
     uint16_t            smooth_accel_us_per_s2[IPC_CFG_NUM_SERVOS];
     uint16_t            smooth_deadband_us[IPC_CFG_NUM_SERVOS];
 
+    /* Logical-slot → physical PCA9685 channel map. Loaded from
+     * runtime.json's servo_pca_ch[] array; cpcu_io copies this into
+     * PCA_Handle::servo_channel[] right after PCA_Init. Lets the
+     * operator wire to ANY of the 16 PCA outputs (e.g. {0,2,4,7,11,15})
+     * without rewiring the firmware's 6-slot motor_cmd array. */
+    uint8_t             servo_pca_ch[IPC_CFG_NUM_SERVOS];
+    uint8_t             _pad_pca[2];
+
     /* per-servo gravity compensation.
      *   gravity_dir:       -1 = gravity helps negative, +1 = positive, 0 = off.
      *   gravity_scale_pct: 10-100, velocity multiplier for gravity direction. */

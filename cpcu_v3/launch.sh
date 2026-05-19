@@ -276,6 +276,47 @@ preflight_kernel() {
 
     [ -e /dev/spidev0.0 ] || warn "/dev/spidev0.0 missing — run './launch.sh setup'"
     [ -e /dev/i2c-1 ]     || warn "/dev/i2c-1 missing — run './launch.sh setup'"
+
+    # Keep runtime.json's servo_pca_ch[] in lockstep with gestures.json's
+    # per-servo pca_ch values. The operator edits gestures.json (one
+    # source of truth for which physical PCA9685 channel each named
+    # servo lives on); we mirror those values into runtime.json so
+    # cpcu_io's I²C driver actually routes PWM to the right outputs.
+    sync_servo_pca_ch_to_runtime
+}
+
+# Pull pca_ch values out of gestures.json (sorted by pca_ch ascending)
+# and write them as runtime.json's servo_pca_ch array. Idempotent: if
+# the arrays already match, this is a no-op. Validates that all six
+# pca_ch values are distinct and in 0..15 before patching.
+sync_servo_pca_ch_to_runtime() {
+    local rt="${CPCU_ROOT}/config/runtime.json"
+    [ -f "${rt}" ] || return 0
+    [ -f "${GS}" ] || return 0
+    python3 - "${rt}" "${GS}" << 'PYEOF' || warn "servo_pca_ch sync failed"
+import json, sys
+rt_path, gs_path = sys.argv[1], sys.argv[2]
+with open(gs_path) as f: gs = json.load(f)
+sc = gs.get("servo_channels", {})
+if not sc: sys.exit(0)
+sorted_servos = sorted(sc.items(), key=lambda x: x[1].get("pca_ch", 0))
+pca_ch = [int(s[1].get("pca_ch", i)) for i, s in enumerate(sorted_servos)]
+# pad / truncate to exactly 6 slots
+pca_ch = (pca_ch + list(range(6)))[:6]
+# validate 0..15 and distinct
+if any(v < 0 or v > 15 for v in pca_ch):
+    sys.stderr.write(f"sync_servo_pca_ch: out-of-range value {pca_ch}\n"); sys.exit(1)
+if len(set(pca_ch)) != len(pca_ch):
+    sys.stderr.write(f"sync_servo_pca_ch: duplicate PCA channels {pca_ch}\n"); sys.exit(1)
+# patch only if changed (avoid unnecessary file writes / kernel reloads)
+with open(rt_path) as f: rt = json.load(f)
+if rt.get("servo_pca_ch") == pca_ch:
+    sys.exit(0)
+rt["servo_pca_ch"] = pca_ch
+with open(rt_path, "w") as f: json.dump(rt, f, indent=4)
+names = ", ".join(f"{s[0]}->{s[1].get('pca_ch')}" for s in sorted_servos[:6])
+print(f"[sync] servo_pca_ch updated: {pca_ch}  ({names})")
+PYEOF
 }
 
 preflight_pca()    { resolve_bin pca_testbench;    }

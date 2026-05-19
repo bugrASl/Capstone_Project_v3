@@ -41,6 +41,8 @@ emit_default_runtime_json() {
     "smooth_accel":    [ 12, 12, 12, 12, 12, 6 ],
     "// smooth_deadband": "Hold-pose deadband in micros. 10 us = 2 PCA9685 LSBs (~4.88 us each). Below this PWM can't move anyway.",
     "smooth_deadband": [ 10, 10, 10, 10, 10, 10 ],
+    "// servo_pca_ch": "Logical slot (0..5) -> physical PCA9685 channel (0..15). Same order as servo arrays above. Default is identity; override to wire to non-contiguous PCA channels.",
+    "servo_pca_ch":    [ 0, 1, 2, 3, 4, 5 ],
     "// interp_conf_floor_pct": "SVM confidence floor for class hold (0-100).",
     "interp_conf_floor_pct": 40,
     "// interp_conf_ceil_pct": "SVM confidence ceiling above which class commits (0-100).",

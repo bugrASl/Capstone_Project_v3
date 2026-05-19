@@ -139,13 +139,7 @@
 #define I2C_DEVICE              "/dev/i2c-1"
 #define PCA9685_ADDR            0x40
 #define GPIO_CE                 25
-#define NRF_CHANNEL             76          /* 2.476 GHz — quieter than the
-                                             * 2.4-GHz Wi-Fi top band, paired
-                                             * with the matching channel on
-                                             * the BSAU side. Must stay in
-                                             * sync with nrf_testbench.c's
-                                             * RF_CHANNEL and the TUI display
-                                             * strings in cpcu_tui_render.c. */
+#define NRF_CHANNEL             108
 #define NRF_ADDRESS             {0xE7, 0xE7, 0xE7, 0xE7, 0xE7}
 
 #define NRF_INIT_RETRIES        3
@@ -415,6 +409,22 @@ int main(int argc, char *argv[])
      * reloads without re-applying every tick — see the loop body. */
     uint32_t cfg_seq_seen = cfg_cache.config_seq;
     apply_runtime_smoother_cfg(&smooth, &cfg_cache);
+
+    /* Override the PCA driver's compile-time logical→physical channel
+     * map with the runtime-tunable values from runtime.json. This is
+     * what lets the operator wire servos to arbitrary PCA9685 channels
+     * (e.g. {0, 2, 4, 7, 11, 15} instead of {0, 1, 2, 3, 4, 5}). */
+    if(pca_ok)
+    {
+        for(int i = 0; i < PCA_SERVO_COUNT; i++)
+        {
+            pca.servo_channel[i] = cfg_cache.servo_pca_ch[i];
+        }
+        LOG_I("PCA", "logical->physical map from runtime.json: "
+              "S0=%u S1=%u S2=%u S3=%u S4=%u S5=%u",
+              pca.servo_channel[0], pca.servo_channel[1], pca.servo_channel[2],
+              pca.servo_channel[3], pca.servo_channel[4], pca.servo_channel[5]);
+    }
 
     /* v2.3.9: gravity compensation for weight-bearing joints.
      * Loaded from runtime.json; falls back to hardcoded defaults for
