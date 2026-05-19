@@ -64,6 +64,7 @@ if events:
         "calibration_done": "calibration complete",
     }
     for ename, edef in events.items():
+    if isinstance(edef, str) or ename.startswith("_"): continue
         vname = edef.get("voice")
         if vname:
             text = event_texts.get(ename, ename.replace("_", " "))
