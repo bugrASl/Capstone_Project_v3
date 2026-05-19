@@ -1370,10 +1370,12 @@ cat << 'HELPEOF'
     ./launch.sh show-config                   show all groups + gestures
     ./launch.sh add-group gesture_2           create group (asks EMG + model)
     ./launch.sh remove-group gesture_1        delete entire group
+    ./launch.sh rename-group gesture_0 right  rename a group
 
   GESTURES (each gesture belongs to a group)
   ─────────────────────────────────────────────────────────────
-    ./launch.sh add-gesture                   guided wizard (+ audio)
+    ./launch.sh add-gesture                   add to first group (wizard)
+    ./launch.sh add-gesture gesture_1         add to specific group
     ./launch.sh edit-gesture flex             change servo mapping
     ./launch.sh rename-gesture hand grip      rename gesture
     ./launch.sh remove-gesture gesture_0 flex delete gesture from group
@@ -1938,7 +1940,15 @@ _run_script() {
 
 run_grip_tune()      { _run_script grip_tune.sh "$@"; }
 run_calibrate()      { _run_script calibrate.sh "$@"; }
-run_add_gesture()    { _run_script add_gesture.sh "$@"; }
+run_add_gesture() {
+    local group="${1:-}"
+    if [ -n "$group" ] && [[ "$group" == gesture_* ]]; then
+        shift
+        CPCU_GESTURE_GROUP="$group" _run_script add_gesture.sh "$@"
+    else
+        _run_script add_gesture.sh "$@"
+    fi
+}
 run_generate_cues()  { _run_script generate_voice_cues.sh "$@"; }
 run_set_channels()   { _run_script set_channels.sh "$@"; }
 cmd_setup_audio()    { _run_script setup_audio.sh "$@"; }
@@ -2133,6 +2143,34 @@ if '${name}' not in gg: print(f\"  Not found.\"); sys.exit(1)
 del gg['${name}']
 with open('${GS}', 'w') as f: json.dump(g, f, indent=4)
 print(f\"  \033[32m✓\033[0m Removed '${name}'.\")
+"
+}
+
+# ── rename-group ──
+cmd_rename_group() {
+    local old="${1:-}" new="${2:-}"
+    if [ -z "$old" ] || [ -z "$new" ]; then
+        err "Usage: ./launch.sh rename-group <old_name> <new_name>"
+        python3 -c "
+import json
+with open('${GS}') as f: g = json.load(f)
+print('  Groups: ' + ', '.join(g.get('gesture_groups',{}).keys()))
+"
+        exit 1
+    fi
+    python3 -c "
+import json, sys
+with open('${GS}') as f: g = json.load(f)
+gg = g.get('gesture_groups', {})
+if '${old}' not in gg: print(f\"  '${old}' not found.\"); sys.exit(1)
+if '${new}' in gg: print(f\"  '${new}' already exists.\"); sys.exit(1)
+# preserve order: rebuild dict
+new_gg = {}
+for k, v in gg.items():
+    new_gg['${new}' if k == '${old}' else k] = v
+g['gesture_groups'] = new_gg
+with open('${GS}', 'w') as f: json.dump(g, f, indent=4)
+print(f\"  \033[32m✓\033[0m Renamed '${old}' → '${new}'.\")
 "
 }
 
@@ -2554,6 +2592,7 @@ case "${MODE}" in
     edit-gesture)           cmd_edit_gesture "$@" ;;
     add-group)              cmd_add_group "$@" ;;
     remove-group)           cmd_remove_group "$@" ;;
+    rename-group)           cmd_rename_group "$@" ;;
     add-motor)              cmd_add_motor "$@" ;;
     remove-motor)           cmd_remove_motor "$@" ;;
     edit-motor)             cmd_edit_motor "$@" ;;

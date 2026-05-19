@@ -56,10 +56,10 @@ if [ "$MODE" = "velocity" ]; then
     for s in $SERVOS; do
         read -rp "  ${s} rate (µs/s, negative=reverse) [200]: " rate
         rate="${rate:-200}"
-        snap="false"
+        snap="False"
         if [ "$s" = "S5_Gripper" ]; then
             read -rp "  ${s} snap mode? (y/n) [n]: " sn
-            [[ "$sn" =~ ^[yY] ]] && snap="true"
+            [[ "$sn" =~ ^[yY] ]] && snap="True"
         fi
         [ $first -eq 0 ] && CH_JSON="${CH_JSON},"
         CH_JSON="${CH_JSON} \"${s}\": {\"rate_us_s\": ${rate}, \"snap\": ${snap}}"
