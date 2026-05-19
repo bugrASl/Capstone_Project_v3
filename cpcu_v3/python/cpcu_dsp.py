@@ -319,7 +319,9 @@ def process_window(window_hi):
 
 def confidence_scale(conf_frac, floor, ceil, curve="quadratic"):
     """Map SVM confidence [0,1] to velocity scale [0,1].
-    quadratic: slow start, fast finish. linear: legacy."""
+    quadratic: slow start, fast finish. linear: proportional. none: always 1.0."""
+    if curve == "none":
+        return 1.0
     if conf_frac <= floor:
         return 0.0
     if conf_frac >= ceil:

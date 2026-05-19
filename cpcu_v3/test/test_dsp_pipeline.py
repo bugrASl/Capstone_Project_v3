@@ -346,7 +346,11 @@ def test_runtime_config_loader_defaults():
     """v3: load_gestures returns defaults when gestures.json missing."""
     print("\n--- TB-DSP11: config loader (defaults) ---")
     import cpcu_dsp
-    gestures, channels, conf, hyst = cpcu_dsp.load_gestures("/tmp/nonexistent.json")
+    groups, _ = cpcu_dsp.load_gestures("/tmp/nonexistent.json")
+    gestures = groups[0]["gestures"]
+    channels = groups[0]["emg_channels"]
+    conf = groups[0]["confidence"]
+    hyst = groups[0]["hysteresis"]
     ASSERT("rest" in gestures, "default has rest gesture")
     ASSERT(gestures["rest"]["mode"] == "freeze", "rest defaults to freeze")
     ASSERT(len(channels) > 0, f"default channels: {channels}")

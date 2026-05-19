@@ -1942,12 +1942,21 @@ run_grip_tune()      { _run_script grip_tune.sh "$@"; }
 run_calibrate()      { _run_script calibrate.sh "$@"; }
 run_add_gesture() {
     local group="${1:-}"
-    if [ -n "$group" ] && [[ "$group" == gesture_* ]]; then
-        shift
-        CPCU_GESTURE_GROUP="$group" _run_script add_gesture.sh "$@"
-    else
-        _run_script add_gesture.sh "$@"
+    if [ -n "$group" ]; then
+        # check if first arg is an existing group name
+        local is_group
+        is_group=$(python3 -c "
+import json
+with open('${GS}') as f: g = json.load(f)
+print('yes' if '${group}' in g.get('gesture_groups', {}) else 'no')
+" 2>/dev/null)
+        if [ "$is_group" = "yes" ]; then
+            shift
+            CPCU_GESTURE_GROUP="$group" _run_script add_gesture.sh "$@"
+            return $?
+        fi
     fi
+    _run_script add_gesture.sh "$@"
 }
 run_generate_cues()  { _run_script generate_voice_cues.sh "$@"; }
 run_set_channels()   { _run_script set_channels.sh "$@"; }
