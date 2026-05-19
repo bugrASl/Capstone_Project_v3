@@ -1957,14 +1957,10 @@ def sep(): print("  " + "─" * 58)
 
 h("SYSTEM CONFIGURATION")
 sep()
-print(f"  Model:      {g.get('model_path','?')}")
+print(f"  Schema:     v{g.get('schema_version','?')}")
 print(f"  Audio:      {g.get('audio_mode','off')} @ {g.get('audio_volume_pct',80)}%")
-cc = g.get("confidence", {})
-print(f"  Confidence: {cc.get('curve','?')} floor={cc.get('floor_pct','?')}% ceil={cc.get('ceil_pct','?')}%")
-hy = g.get("hysteresis", {})
-print(f"  Hysteresis: rest→active={hy.get('rest_to_active','?')} "
-      f"active→active={hy.get('active_to_active','?')} "
-      f"active→rest={hy.get('active_to_rest','?')}")
+gg = g.get("gesture_groups", {})
+print(f"  Groups:     {len(gg)} gesture group(s)")
 
 h("SERVO MOTORS")
 sep()
@@ -1972,27 +1968,34 @@ fmt = "  {:<12s} PCA={:<2d}  range=[{:>4d}, {:>4d}]  neutral={:>4d}"
 for name, sd in g.get("servo_channels", {}).items():
     print(fmt.format(name, sd["pca_ch"], sd["min_us"], sd["max_us"], sd["neutral_us"]))
 
-h("EMG CHANNELS")
+h("GESTURE GROUPS")
 sep()
-ec = g.get("emg_channels", {})
-active = ec.get("active", [])
-names  = ec.get("names", [])
-for i, ch in enumerate(active):
-    nm = names[i] if i < len(names) else "?"
-    print(f"  ADC ch{ch}  →  {nm}")
-
-h("GESTURES")
-sep()
-fmt2 = "  {:<15s} {:<8s} {:<30s} {:s}"
-print(fmt2.format("NAME", "MODE", "SERVOS", "AUDIO"))
-sep()
-for gn, gd in g.get("gestures", {}).items():
-    mode = gd.get("mode", "?")
-    chs = gd.get("channels", {})
-    ch_s = ", ".join(f"{s}={d.get('rate_us_s',0)}" for s,d in chs.items()) or "-"
-    a = gd.get("audio", {})
-    a_s = a.get("voice", "-")
-    print(fmt2.format(gn, mode, ch_s, a_s))
+if not gg:
+    print("  (none — run ./launch.sh add-group)")
+for grp_name, grp in gg.items():
+    ec = grp.get("emg_channels", {})
+    chs = ec.get("active", [])
+    names = ec.get("names", [])
+    model = grp.get("model_path", "-")
+    cc = grp.get("confidence", {})
+    hy = grp.get("hysteresis", {})
+    print(f"\n  {B}{grp_name}{N}")
+    ch_str = ", ".join(f"ch{c}={names[i] if i<len(names) else '?'}" for i,c in enumerate(chs))
+    print(f"    EMG:        {ch_str}")
+    print(f"    Model:      {model}")
+    print(f"    Confidence: {cc.get('curve','?')} floor={cc.get('floor_pct','?')}% ceil={cc.get('ceil_pct','?')}%")
+    print(f"    Hysteresis: r→a={hy.get('rest_to_active','?')} a→a={hy.get('active_to_active','?')} a→r={hy.get('active_to_rest','?')}")
+    gestures = grp.get("gestures", {})
+    if gestures:
+        print(f"    {'NAME':<14s} {'MODE':<9s} {'SERVOS':<28s} {'AUDIO'}")
+        for gn, gd in gestures.items():
+            mode = gd.get("mode", "?")
+            chs2 = gd.get("channels", {})
+            ch_s = ", ".join(f"{s}={d.get('rate_us_s',0)}" for s,d in chs2.items()) or "-"
+            a_s = gd.get("audio", {}).get("voice", "-")
+            print(f"    {gn:<14s} {mode:<9s} {ch_s:<28s} {a_s}")
+    else:
+        print("    (no gestures — run ./launch.sh add-gesture)")
 
 h("AUDIO EVENTS")
 sep()
