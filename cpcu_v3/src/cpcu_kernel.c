@@ -37,7 +37,7 @@
 #define READY_TIMEOUT_S         10              /* Max wait for child ready flag */
 
 /* Paths */
-#define CPCU_IO_BIN             "./cpcu_io"
+#define CPCU_IO_BIN             "/opt/cpcu/bin/cpcu_io"
 #define CPCU_DSP_SCRIPT         "/opt/cpcu/python/cpcu_dsp.py"
 #define CPCU_DSP_SCRIPT_ALT     "./cpcu_dsp.py"
 #define PYTHON3_BIN             "/usr/bin/python3"
