@@ -167,11 +167,12 @@ static void build_state_frame(void)
     {
         uint16_t srv[IPC_NUM_SERVOS];
         uint8_t gid = 0, cpct = 0;
-        IPC_ReadMotorCmd(&g_ipc, srv, &gid, &cpct);
+        uint32_t lack = 0;
+        IPC_ReadMotorCmd(&g_ipc, srv, &gid, &cpct, &lack);
         jw_kv_obj_begin(&jw, "motor");
             jw_kv_arr_begin(&jw, "servo_us");
                 for(int i = 0; i < IPC_NUM_SERVOS; i++)
-                    jw_arr_int(&jw, (long long)srv[i]);
+                    jw_int(&jw, (long long)srv[i]);
             jw_arr_end(&jw);
             jw_kv_int(&jw, "gesture_id", (long long)gid);
             jw_kv_int(&jw, "confidence_pct", (long long)cpct);
