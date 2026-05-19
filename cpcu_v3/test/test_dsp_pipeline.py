@@ -371,7 +371,13 @@ def test_gestures_json_valid():
     print("\n--- TB-DSP13: gestures.json loads ---")
     import cpcu_dsp, os
     gs_path = os.path.join(os.path.dirname(__file__), "..", "config", "gestures.json")
-    gestures, channels, conf, hyst = cpcu_dsp.load_gestures(gs_path)
+    groups, servo_ch = cpcu_dsp.load_gestures(gs_path)
+    gestures = {}
+    for grp in groups:
+        gestures.update(grp.get("gestures", {}))
+    channels = groups[0]["emg_channels"] if groups else []
+    conf = groups[0]["confidence"] if groups else {}
+    hyst = groups[0]["hysteresis"] if groups else {}
     ASSERT(len(gestures) >= 2, f"has {len(gestures)} gestures")
     ASSERT("rest" in gestures, "has rest")
     ASSERT(len(channels) >= 1, f"has {len(channels)} EMG channels")
