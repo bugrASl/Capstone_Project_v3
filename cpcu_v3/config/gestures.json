@@ -2,294 +2,167 @@
     "schema_version": 5,
     "audio_mode": "voice",
     "audio_volume_pct": 80,
+
     "servo_channels": {
         "Base": {
-            "pca_ch": 0,
-            "min_us": 498,
-            "max_us": 2500,
+            "pca_ch":     0,
+            "min_us":     498,
+            "max_us":     2500,
             "neutral_us": 1500
         },
         "Elbow": {
-            "pca_ch": 1,
-            "min_us": 1074,
-            "max_us": 1953,
+            "pca_ch":     1,
+            "min_us":     1074,
+            "max_us":     1953,
             "neutral_us": 1500
         },
         "Forearm": {
-            "pca_ch": 2,
-            "min_us": 1074,
-            "max_us": 1953,
+            "pca_ch":     2,
+            "min_us":     1074,
+            "max_us":     1953,
             "neutral_us": 1500
         },
         "Wrist1": {
-            "pca_ch": 3,
-            "min_us": 1001,
-            "max_us": 2002,
+            "pca_ch":     3,
+            "min_us":     1001,
+            "max_us":     2002,
             "neutral_us": 1500
         },
         "Wrist2": {
-            "pca_ch": 4,
-            "min_us": 1001,
-            "max_us": 2002,
+            "pca_ch":     4,
+            "min_us":     1001,
+            "max_us":     2002,
             "neutral_us": 1500
         },
         "Gripper": {
-            "pca_ch": 5,
-            "min_us": 976,
-            "max_us": 1733,
+            "pca_ch":     5,
+            "min_us":     976,
+            "max_us":     1733,
             "neutral_us": 1500
         }
     },
+
     "gesture_groups": {
+
         "right_arm": {
+            "_comment": "Right-arm classifier — ch 0/1/2. hand=OPEN gripper, flex=arm UP, ext=arm DOWN.",
             "emg_channels": {
-                "active": [
-                    0,
-                    1,
-                    2
-                ],
-                "names": [
-                    "Forearm_R",
-                    "Biceps_R",
-                    "Triceps_R"
-                ]
+                "active": [0, 1, 2],
+                "names":  ["Forearm_R", "Biceps_R", "Triceps_R"]
             },
-            "model_path": "models/right_arm.pkl",
+            "model_path": "models/arm.pkl",
             "confidence": {
-                "curve": "quadratic",
+                "curve":     "quadratic",
                 "floor_pct": 40,
-                "ceil_pct": 85
+                "ceil_pct":  85
             },
             "hysteresis": {
-                "rest_to_active": 4,
-                "active_to_rest": 2,
-                "active_to_active": 6
+                "rest_to_active":   3,
+                "active_to_rest":   0,
+                "active_to_active": 3
             },
             "gestures": {
                 "rest": {
-                    "mode": "freeze",
-                    "audio": {
-                        "voice": "voice_rest",
-                        "freq_hz": 330,
-                        "freq_ms": 60
-                    }
-                },
-                "flex": {
-                    "mode": "velocity",
-                    "channels": {
-                        "Elbow": {
-                            "rate_us_s": 200
-                        }
-                    },
-                    "audio": {
-                        "voice": "voice_flex",
-                        "freq_hz": 440,
-                        "freq_ms": 80
-                    }
-                },
-                "ext": {
-                    "mode": "velocity",
-                    "channels": {
-                        "Elbow": {
-                            "rate_us_s": -200
-                        }
-                    },
-                    "audio": {
-                        "voice": "voice_ext",
-                        "freq_hz": 660,
-                        "freq_ms": 80
-                    }
+                    "mode":     "freeze",
+                    "channels": {},
+                    "audio":    { "voice": "voice_rest_r", "freq_hz": 330, "freq_ms": 60 }
                 },
                 "hand": {
-                    "mode": "velocity",
+                    "_comment": "Right forearm contraction -> OPEN gripper. Positive rate drives toward max_us=1733.",
+                    "mode":     "velocity",
                     "channels": {
-                        "Gripper": {
-                            "rate_us_s": -200,
-                            "snap": true
-                        }
+                        "Gripper": { "rate_us_s":  200, "snap": false }
                     },
-                    "audio": {
-                        "voice": "voice_hand",
-                        "freq_hz": 330,
-                        "freq_ms": 80
-                    }
+                    "audio":    { "voice": "voice_hand_r", "freq_hz": 330, "freq_ms": 80 }
+                },
+                "flex": {
+                    "_comment": "Right biceps -> arm UP via Elbow servo.",
+                    "mode":     "velocity",
+                    "channels": {
+                        "Elbow":   { "rate_us_s":  200 }
+                    },
+                    "audio":    { "voice": "voice_flex_r", "freq_hz": 440, "freq_ms": 80 }
+                },
+                "ext": {
+                    "_comment": "Right triceps -> arm DOWN via Elbow servo.",
+                    "mode":     "velocity",
+                    "channels": {
+                        "Elbow":   { "rate_us_s": -200 }
+                    },
+                    "audio":    { "voice": "voice_ext_r", "freq_hz": 660, "freq_ms": 80 }
                 }
             }
         },
+
         "left_arm": {
+            "_comment": "Left-arm classifier — ch 3/4/5. hand=CLOSE gripper (snap+firm), flex=arm RIGHT, ext=arm LEFT.",
             "emg_channels": {
-                "active": [
-                    3,
-                    4,
-                    5
-                ],
-                "names": [
-                    "Forearm_L",
-                    "Biceps_L",
-                    "Triceps_L"
-                ]
+                "active": [3, 4, 5],
+                "names":  ["Forearm_L", "Biceps_L", "Triceps_L"]
             },
-            "model_path": "models/left_arm.pkl",
+            "model_path": "models/arm.pkl",
             "confidence": {
-                "curve": "quadratic",
+                "curve":     "quadratic",
                 "floor_pct": 40,
-                "ceil_pct": 85
+                "ceil_pct":  85
             },
             "hysteresis": {
-                "rest_to_active": 4,
-                "active_to_rest": 2,
-                "active_to_active": 6
+                "rest_to_active":   3,
+                "active_to_rest":   0,
+                "active_to_active": 3
             },
             "gestures": {
                 "rest": {
-                    "mode": "freeze",
-                    "audio": {
-                        "voice": "voice_rest_l",
-                        "freq_hz": 330,
-                        "freq_ms": 60
-                    }
-                },
-                "flex": {
-                    "mode": "velocity",
-                    "channels": {
-                        "Base": {
-                            "rate_us_s": 200
-                        }
-                    },
-                    "audio": {
-                        "voice": "voice_flex_l",
-                        "freq_hz": 440,
-                        "freq_ms": 80
-                    }
-                },
-                "ext": {
-                    "mode": "velocity",
-                    "channels": {
-                        "Base": {
-                            "rate_us_s": -200
-                        }
-                    },
-                    "audio": {
-                        "voice": "voice_ext_l",
-                        "freq_hz": 660,
-                        "freq_ms": 80
-                    }
+                    "mode":     "freeze",
+                    "channels": {},
+                    "audio":    { "voice": "voice_rest_l", "freq_hz": 330, "freq_ms": 60 }
                 },
                 "hand": {
-                    "mode": "velocity",
+                    "_comment": "Left forearm contraction -> CLOSE gripper. snap=true + grip_firm_us so the gripper bottoms out at a firm-grip stop instead of continuing toward min_us and stalling the motor.",
+                    "mode":         "velocity",
                     "channels": {
-                        "Gripper": {
-                            "rate_us_s": -400,
-                            "snap": true
-                        }
+                        "Gripper": { "rate_us_s": -400, "snap": true }
                     },
                     "grip_firm_us": 1080,
-                    "audio": {
-                        "voice": "voice_grip",
-                        "freq_hz": 550,
-                        "freq_ms": 50
-                    }
+                    "audio":        { "voice": "voice_hand_l", "freq_hz": 550, "freq_ms": 50 }
+                },
+                "flex": {
+                    "_comment": "Left biceps -> arm RIGHT via Base servo.",
+                    "mode":     "velocity",
+                    "channels": {
+                        "Base":    { "rate_us_s":  200 }
+                    },
+                    "audio":    { "voice": "voice_flex_l", "freq_hz": 440, "freq_ms": 80 }
+                },
+                "ext": {
+                    "_comment": "Left triceps -> arm LEFT via Base servo.",
+                    "mode":     "velocity",
+                    "channels": {
+                        "Base":    { "rate_us_s": -200 }
+                    },
+                    "audio":    { "voice": "voice_ext_l", "freq_hz": 660, "freq_ms": 80 }
                 }
             }
         }
     },
+
     "audio_events": {
-        "_comment": "priority: 1=gesture (highest), 2=failure, 3=system",
-        "system_ready": {
-            "priority": 3,
-            "voice": "voice_system_ready",
-            "freq_hz": 880,
-            "freq_ms": 200
-        },
-        "system_shutdown": {
-            "priority": 3,
-            "voice": "voice_system_shutdown",
-            "freq_hz": 220,
-            "freq_ms": 300
-        },
-        "io_ready": {
-            "priority": 3,
-            "voice": "voice_io_ready",
-            "freq_hz": 600,
-            "freq_ms": 100
-        },
-        "dsp_ready": {
-            "priority": 3,
-            "voice": "voice_dsp_ready",
-            "freq_hz": 700,
-            "freq_ms": 100
-        },
-        "model_loaded": {
-            "priority": 3,
-            "voice": "voice_model_loaded",
-            "freq_hz": 750,
-            "freq_ms": 120
-        },
-        "config_reloaded": {
-            "priority": 3,
-            "voice": "voice_config_reloaded",
-            "freq_hz": 500,
-            "freq_ms": 100
-        },
-        "calibration_done": {
-            "priority": 3,
-            "voice": "voice_calibration_done",
-            "freq_hz": 800,
-            "freq_ms": 100
-        },
-        "audio_started": {
-            "priority": 3,
-            "voice": "voice_audio_started",
-            "freq_hz": 660,
-            "freq_ms": 80
-        },
-        "safe_state_entered": {
-            "priority": 2,
-            "voice": "voice_safe_state",
-            "freq_hz": 200,
-            "freq_ms": 500
-        },
-        "safe_state_cleared": {
-            "priority": 2,
-            "voice": "voice_safe_cleared",
-            "freq_hz": 600,
-            "freq_ms": 150
-        },
-        "link_lost": {
-            "priority": 2,
-            "voice": "voice_link_lost",
-            "freq_hz": 300,
-            "freq_ms": 400
-        },
-        "link_recovered": {
-            "priority": 2,
-            "voice": "voice_link_recovered",
-            "freq_hz": 600,
-            "freq_ms": 150
-        },
-        "ring_overflow": {
-            "priority": 2,
-            "voice": "voice_ring_overflow",
-            "freq_hz": 250,
-            "freq_ms": 300
-        },
-        "i2c_failure": {
-            "priority": 2,
-            "voice": "voice_i2c_failure",
-            "freq_hz": 280,
-            "freq_ms": 350
-        },
-        "dsp_stall": {
-            "priority": 2,
-            "voice": "voice_dsp_stall",
-            "freq_hz": 260,
-            "freq_ms": 400
-        },
-        "thermal_warning": {
-            "priority": 2,
-            "voice": "voice_thermal_warning",
-            "freq_hz": 240,
-            "freq_ms": 500
-        }
+        "_comment":             "priority: 1=gesture (highest), 2=failure, 3=system",
+        "system_ready":         { "priority": 3, "voice": "voice_system_ready",        "freq_hz": 880, "freq_ms": 200 },
+        "system_shutdown":      { "priority": 3, "voice": "voice_system_shutdown",     "freq_hz": 220, "freq_ms": 300 },
+        "io_ready":             { "priority": 3, "voice": "voice_io_ready",            "freq_hz": 600, "freq_ms": 100 },
+        "dsp_ready":            { "priority": 3, "voice": "voice_dsp_ready",           "freq_hz": 700, "freq_ms": 100 },
+        "model_loaded":         { "priority": 3, "voice": "voice_model_loaded",        "freq_hz": 750, "freq_ms": 120 },
+        "config_reloaded":      { "priority": 3, "voice": "voice_config_reloaded",     "freq_hz": 500, "freq_ms": 100 },
+        "calibration_done":     { "priority": 3, "voice": "voice_calibration_done",    "freq_hz": 800, "freq_ms": 100 },
+        "audio_started":        { "priority": 3, "voice": "voice_audio_started",       "freq_hz": 660, "freq_ms":  80 },
+        "safe_state_entered":   { "priority": 2, "voice": "voice_safe_state",          "freq_hz": 200, "freq_ms": 500 },
+        "safe_state_cleared":   { "priority": 2, "voice": "voice_safe_cleared",        "freq_hz": 600, "freq_ms": 150 },
+        "link_lost":            { "priority": 2, "voice": "voice_link_lost",           "freq_hz": 300, "freq_ms": 400 },
+        "link_recovered":       { "priority": 2, "voice": "voice_link_recovered",      "freq_hz": 600, "freq_ms": 150 },
+        "ring_overflow":        { "priority": 2, "voice": "voice_ring_overflow",       "freq_hz": 250, "freq_ms": 300 },
+        "i2c_failure":          { "priority": 2, "voice": "voice_i2c_failure",         "freq_hz": 280, "freq_ms": 350 },
+        "dsp_stall":            { "priority": 2, "voice": "voice_dsp_stall",           "freq_hz": 260, "freq_ms": 400 },
+        "thermal_warning":      { "priority": 2, "voice": "voice_thermal_warning",     "freq_hz": 240, "freq_ms": 500 }
     }
 }

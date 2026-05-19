@@ -805,111 +805,147 @@ void draw_page_overview(int r, IPC_Context *ipc,
         uint32_t bsau_const  = TUI_LAT_ADC_PACK_US + TUI_LAT_WIRELESS_US;
         uint32_t srvo_const  = TUI_LAT_SMOOTHER_I2C_US + TUI_LAT_SERVO_MECH_US;
 
+        /* Layout columns (1-indexed character positions):
+         *   col 3   stage label   (left-justified, 21 chars wide)
+         *   col 26  numeric value (right-justified inside 9-char field)
+         *   col 36  unit + tag    ("us  (const)" / "us  (meas)")
+         *   col 53  description   (single line, dim)
+         * Sub-rows under "pkt → motor IPC" indent the label to col 5 so
+         * the dash bullet visually nests them inside the CPCU group. */
+        #define LAT_LBL_COL     3
+        #define LAT_VAL_COL     27
+        #define LAT_TAG_COL     38
+        #define LAT_DESC_COL    56
+
         draw_hline(r - 1, 0, g_tui_w);
         draw_section(r, 1, "END-TO-END LATENCY  (EMG event → servo motion, budget < 300 ms)");
         r++;
 
-        /*---- BSAU → CPCU sensor path (fixed) ----*/
+        /*---- Group 1: BSAU → CPCU (sensor path, fixed) ----*/
+        attron(COLOR_PAIR(CP_HEADER) | A_BOLD);
+        mvprintw(r, 1, "BSAU → CPCU  (sensor path)");
+        attroff(COLOR_PAIR(CP_HEADER) | A_BOLD);
+        r++;
+        mvprintw(r, LAT_LBL_COL, "ADC + WL_Pack");
+        attron(COLOR_PAIR(CP_CYAN));
+        mvprintw(r, LAT_VAL_COL, "%6u us", TUI_LAT_ADC_PACK_US);
+        attroff(COLOR_PAIR(CP_CYAN));
         attron(COLOR_PAIR(CP_DIM));
-        mvprintw(r, 1, "┌─ BSAU → CPCU (sensor path) ───────────────────────────────────────────");
+        mvprintw(r, LAT_TAG_COL, "(const)");
+        mvprintw(r, LAT_DESC_COL, "STM32 8-ch ADC sampling + 32 B frame pack");
         attroff(COLOR_PAIR(CP_DIM));
         r++;
-        mvprintw(r, 1, "│ ADC + WL_Pack:");
-        attron(COLOR_PAIR(CP_CYAN));   printw("  %4u us", TUI_LAT_ADC_PACK_US);  attroff(COLOR_PAIR(CP_CYAN));
+        mvprintw(r, LAT_LBL_COL, "Wireless TX + ACK");
+        attron(COLOR_PAIR(CP_CYAN));
+        mvprintw(r, LAT_VAL_COL, "%6u us", TUI_LAT_WIRELESS_US);
+        attroff(COLOR_PAIR(CP_CYAN));
         attron(COLOR_PAIR(CP_DIM));
-        printw("  (const)   STM32 8-ch ADC sampling + 32 B frame pack");
+        mvprintw(r, LAT_TAG_COL, "(const)");
+        mvprintw(r, LAT_DESC_COL, "NRF24L01+ ESB: SPI upload + 2 Mbps air + auto-ACK");
         attroff(COLOR_PAIR(CP_DIM));
         r++;
-        mvprintw(r, 1, "│ Wireless TX+ACK:");
-        attron(COLOR_PAIR(CP_CYAN));   printw("%4u us", TUI_LAT_WIRELESS_US);    attroff(COLOR_PAIR(CP_CYAN));
+        mvprintw(r, LAT_LBL_COL, "subtotal");
+        attron(COLOR_PAIR(CP_GOOD) | A_BOLD);
+        mvprintw(r, LAT_VAL_COL, "%6u us", bsau_const);
+        attroff(COLOR_PAIR(CP_GOOD) | A_BOLD);
         attron(COLOR_PAIR(CP_DIM));
-        printw("  (const)   NRF24L01+ ESB SPI upload + 2 Mbps air + auto-ACK");
+        mvprintw(r, LAT_TAG_COL, "(sum)");
         attroff(COLOR_PAIR(CP_DIM));
-        r++;
-        mvprintw(r, 1, "│ BSAU subtotal:");
-        attron(COLOR_PAIR(CP_GOOD));   printw("  %4u us", bsau_const);           attroff(COLOR_PAIR(CP_GOOD));
-        attron(COLOR_PAIR(CP_DIM));
-        printw("  (datasheet sum)");
-        attroff(COLOR_PAIR(CP_DIM));
-        r++;
+        r += 2;
 
-        /*---- CPCU compute (measured by cpcu_dsp.py) ----*/
-        attron(COLOR_PAIR(CP_DIM));
-        mvprintw(r, 1, "├─ CPCU (compute on Pi 5, isolcpus 1-3) ───────────────────────────────");
-        attroff(COLOR_PAIR(CP_DIM));
+        /*---- Group 2: CPCU (compute, measured by Python) ----*/
+        attron(COLOR_PAIR(CP_HEADER) | A_BOLD);
+        mvprintw(r, 1, "CPCU  (compute on Pi 5, isolcpus 1-3)");
+        attroff(COLOR_PAIR(CP_HEADER) | A_BOLD);
         r++;
         if(lat_pkt_us > 0)
         {
             int cp_pkt = (lat_pkt_us > 100000) ? CP_WARN : CP_GOOD;
-            mvprintw(r, 1, "│ pkt -> motor IPC:");
-            attron(COLOR_PAIR(cp_pkt));
-            printw("%5u us", lat_pkt_us);
-            attroff(COLOR_PAIR(cp_pkt));
+            mvprintw(r, LAT_LBL_COL, "pkt → motor IPC");
+            attron(COLOR_PAIR(cp_pkt) | A_BOLD);
+            mvprintw(r, LAT_VAL_COL, "%6u us", lat_pkt_us);
+            attroff(COLOR_PAIR(cp_pkt) | A_BOLD);
             attron(COLOR_PAIR(CP_DIM));
-            printw("  (meas)    rx_time_us -> motor cmd write (%.1f ms)",
-                   lat_pkt_us / 1000.0f);
+            mvprintw(r, LAT_TAG_COL, "(meas)");
+            mvprintw(r, LAT_DESC_COL, "rx_time_us → motor cmd write  (%.1f ms)",
+                     lat_pkt_us / 1000.0f);
             attroff(COLOR_PAIR(CP_DIM));
             r++;
-            mvprintw(r, 3, " - SPI unpack:");
+            /* sub-rows: indent label by 2 to nest visually */
+            mvprintw(r, LAT_LBL_COL + 2, "- SPI unpack");
             attron(COLOR_PAIR(CP_DIM));
-            printw("    %4u us  (const, in meas)  NRF SPI rx + WL_Unpack + IPC push",
-                   TUI_LAT_SPI_UNPACK_US);
+            mvprintw(r, LAT_VAL_COL, "%6u us", TUI_LAT_SPI_UNPACK_US);
+            mvprintw(r, LAT_TAG_COL, "(in meas)");
+            mvprintw(r, LAT_DESC_COL, "NRF SPI read + WL_Unpack + IPC ring push");
             attroff(COLOR_PAIR(CP_DIM));
             r++;
-            mvprintw(r, 3, " - Ring dwell:");
-            attron(COLOR_PAIR(CP_CYAN));   printw("    %4u us", lat_dwell);      attroff(COLOR_PAIR(CP_CYAN));
+            mvprintw(r, LAT_LBL_COL + 2, "- Ring dwell");
+            attron(COLOR_PAIR(CP_CYAN));
+            mvprintw(r, LAT_VAL_COL, "%6u us", lat_dwell);
+            attroff(COLOR_PAIR(CP_CYAN));
             attron(COLOR_PAIR(CP_DIM));
-            printw("  (meas)            Samples wait in IPC ring before DSP drains");
+            mvprintw(r, LAT_TAG_COL, "(in meas)");
+            mvprintw(r, LAT_DESC_COL, "Samples wait in IPC ring before DSP drains");
             attroff(COLOR_PAIR(CP_DIM));
             r++;
             int cp_dsp = (lat_dsp > 50000) ? CP_WARN : CP_CYAN;
-            mvprintw(r, 3, " - DSP compute:");
-            attron(COLOR_PAIR(cp_dsp));    printw("   %4u us", lat_dsp);         attroff(COLOR_PAIR(cp_dsp));
+            mvprintw(r, LAT_LBL_COL + 2, "- DSP compute");
+            attron(COLOR_PAIR(cp_dsp));
+            mvprintw(r, LAT_VAL_COL, "%6u us", lat_dsp);
+            attroff(COLOR_PAIR(cp_dsp));
             attron(COLOR_PAIR(CP_DIM));
-            printw("  (meas)            HP+LP+notch filter + features + RandomForest");
+            mvprintw(r, LAT_TAG_COL, "(in meas)");
+            mvprintw(r, LAT_DESC_COL, "Filter + features + RandomForest inference");
             attroff(COLOR_PAIR(CP_DIM));
-            r++;
+            r += 2;
         }
         else
         {
-            mvprintw(r, 1, "│ pkt -> motor IPC:");
+            mvprintw(r, LAT_LBL_COL, "pkt → motor IPC");
             attron(COLOR_PAIR(CP_WARN));
-            printw("  N/A   ");
+            mvprintw(r, LAT_VAL_COL, "   N/A   ");
             attroff(COLOR_PAIR(CP_WARN));
             attron(COLOR_PAIR(CP_DIM));
-            printw("  (no BSAU packets yet — waiting for first inference window)");
+            mvprintw(r, LAT_TAG_COL, "(waiting)");
+            mvprintw(r, LAT_DESC_COL, "No BSAU packets yet — DSP filling first window");
             attroff(COLOR_PAIR(CP_DIM));
-            r++;
+            r += 2;
         }
 
-        /*---- CPCU → Robotic Arm actuation (fixed) ----*/
+        /*---- Group 3: CPCU → Robotic Arm (actuation, fixed) ----*/
+        attron(COLOR_PAIR(CP_HEADER) | A_BOLD);
+        mvprintw(r, 1, "CPCU → Robotic Arm  (actuation path)");
+        attroff(COLOR_PAIR(CP_HEADER) | A_BOLD);
+        r++;
+        mvprintw(r, LAT_LBL_COL, "Smoother + I²C");
+        attron(COLOR_PAIR(CP_CYAN));
+        mvprintw(r, LAT_VAL_COL, "%6u us", TUI_LAT_SMOOTHER_I2C_US);
+        attroff(COLOR_PAIR(CP_CYAN));
         attron(COLOR_PAIR(CP_DIM));
-        mvprintw(r, 1, "├─ CPCU → Robotic Arm (actuation path) ────────────────────────────────");
+        mvprintw(r, LAT_TAG_COL, "(const)");
+        mvprintw(r, LAT_DESC_COL, "50 Hz tick: slew limiter + PCA9685 I²C 6 servos");
         attroff(COLOR_PAIR(CP_DIM));
         r++;
-        mvprintw(r, 1, "│ Smoother + I2C:");
-        attron(COLOR_PAIR(CP_CYAN));   printw(" %4u us", TUI_LAT_SMOOTHER_I2C_US); attroff(COLOR_PAIR(CP_CYAN));
+        mvprintw(r, LAT_LBL_COL, "Servo mechanical");
+        attron(COLOR_PAIR(CP_CYAN));
+        mvprintw(r, LAT_VAL_COL, "%6u us", TUI_LAT_SERVO_MECH_US);
+        attroff(COLOR_PAIR(CP_CYAN));
         attron(COLOR_PAIR(CP_DIM));
-        printw("  (const)   50 Hz tick: SMOOTH_Update + PCA9685 I2C 6 servos");
+        mvprintw(r, LAT_TAG_COL, "(const)");
+        mvprintw(r, LAT_DESC_COL, "SG90 step response (~15 ms typical, no-load)");
         attroff(COLOR_PAIR(CP_DIM));
         r++;
-        mvprintw(r, 1, "│ Servo mechanical:");
-        attron(COLOR_PAIR(CP_CYAN));   printw("%5u us", TUI_LAT_SERVO_MECH_US);  attroff(COLOR_PAIR(CP_CYAN));
+        mvprintw(r, LAT_LBL_COL, "subtotal");
+        attron(COLOR_PAIR(CP_GOOD) | A_BOLD);
+        mvprintw(r, LAT_VAL_COL, "%6u us", srvo_const);
+        attroff(COLOR_PAIR(CP_GOOD) | A_BOLD);
         attron(COLOR_PAIR(CP_DIM));
-        printw("  (const)   SG90 step response (~15 ms typical at no-load)");
+        mvprintw(r, LAT_TAG_COL, "(sum)");
         attroff(COLOR_PAIR(CP_DIM));
-        r++;
-        mvprintw(r, 1, "│ Arm subtotal:");
-        attron(COLOR_PAIR(CP_GOOD));   printw("   %5u us", srvo_const);          attroff(COLOR_PAIR(CP_GOOD));
-        attron(COLOR_PAIR(CP_DIM));
-        printw("  (datasheet sum)");
-        attroff(COLOR_PAIR(CP_DIM));
-        r++;
+        r += 2;
 
-        /*---- E2E grand total ----*/
-        attron(COLOR_PAIR(CP_DIM));
-        mvprintw(r, 1, "└─");
-        attroff(COLOR_PAIR(CP_DIM));
+        /*---- E2E grand total — visually separated from the breakdown ----*/
+        draw_hline(r - 1, 2, g_tui_w - 4);
         if(lat_pkt_us > 0)
         {
             uint32_t e2e_us = bsau_const + lat_pkt_us + srvo_const;
@@ -917,23 +953,33 @@ void draw_page_overview(int r, IPC_Context *ipc,
             int e2e_cp = (e2e_ms < 200.0f) ? CP_GOOD
                        : (e2e_ms < 300.0f) ? CP_WARN
                        :                     CP_BAD;
-            mvprintw(r, 3, "E2E TOTAL: ");
+            attron(A_BOLD);
+            mvprintw(r, 1, "E2E TOTAL");
+            attroff(A_BOLD);
             attron(COLOR_PAIR(e2e_cp) | A_BOLD);
-            printw("%6.1f ms", e2e_ms);
+            mvprintw(r, LAT_VAL_COL - 3, "%9.1f ms", e2e_ms);
             attroff(COLOR_PAIR(e2e_cp) | A_BOLD);
             attron(COLOR_PAIR(CP_DIM));
-            printw("  (BSAU %u + CPCU %u + arm %u us)   budget < 300 ms",
-                   bsau_const, lat_pkt_us, srvo_const);
+            mvprintw(r, LAT_TAG_COL, "budget < 300 ms      BSAU %u + CPCU %u + arm %u us",
+                     bsau_const, lat_pkt_us, srvo_const);
             attroff(COLOR_PAIR(CP_DIM));
         }
         else
         {
-            mvprintw(r, 3, "E2E TOTAL: ");
+            attron(A_BOLD);
+            mvprintw(r, 1, "E2E TOTAL");
+            attroff(A_BOLD);
             attron(COLOR_PAIR(CP_DIM));
-            printw("waiting for first DSP measurement (BSAU not transmitting)");
+            mvprintw(r, LAT_VAL_COL - 3, "  waiting");
+            mvprintw(r, LAT_TAG_COL, "BSAU not transmitting — DSP has no measurement yet");
             attroff(COLOR_PAIR(CP_DIM));
         }
         r += 2;
+
+        #undef LAT_LBL_COL
+        #undef LAT_VAL_COL
+        #undef LAT_TAG_COL
+        #undef LAT_DESC_COL
     }
 
     uint32_t export_seq = atomic_load(&ipc->dsp_export->update_seq);
@@ -1093,82 +1139,132 @@ void draw_page_radio(int r, IPC_Context *ipc,
 
     draw_hline(r - 1, 0, g_tui_w);
 
-    /*==================== LAST PACKET RAW ====================*/
-    draw_section(r, 1, "LAST PACKET RAW");
-    draw_section(r, g_col_r, "BSAU FLAGS");
+    /*==================== LAST PACKET RAW ====================
+     * Decoded fields from the most recent BSAU packet. Each field gets
+     * a full English label instead of the terse wire-protocol name, so
+     * the operator doesn't need to remember what "ts", "seq", or
+     * "flags" mean. The legacy short names from wireless_packet.h are
+     * still listed in dimmed parentheses for cross-reference with the
+     * codebase. */
+    draw_section(r, 1, "LAST PACKET RAW  (most recent BSAU frame decoded)");
+    draw_section(r, g_col_r, "BSAU SENSOR FLAGS");
     r++;
 
-    /* Legend line — tells the user what these terse field names mean */
-    attron(COLOR_PAIR(CP_DIM) | A_DIM);
-    mvprintw(r, 1, "seq=8-bit  flags=hex  retry=count  loss=last-pkt  ts=BSAU ms  vbat=ADC 0..4095");
-    attroff(COLOR_PAIR(CP_DIM) | A_DIM);
-    r++;
+    /* Row 1: sequence + retry count */
+    mvprintw(r, 1, "Sequence # ");
+    attron(COLOR_PAIR(CP_DIM)); printw("(seq):     "); attroff(COLOR_PAIR(CP_DIM));
+    attron(COLOR_PAIR(CP_CYAN) | A_BOLD);
+    printw("%-4u", latest.seq);
+    attroff(COLOR_PAIR(CP_CYAN) | A_BOLD);
+    attron(COLOR_PAIR(CP_DIM));
+    printw("  (8-bit wrap counter)");
+    attroff(COLOR_PAIR(CP_DIM));
 
-    /* left col: fields */
-    mvprintw(r, 1, "seq=");
-    attron(COLOR_PAIR(CP_CYAN)); printw("%-3u", latest.seq); attroff(COLOR_PAIR(CP_CYAN));
-    printw("  flags=");
-    attron(COLOR_PAIR(CP_CYAN)); printw("0x%02X", latest.flags); attroff(COLOR_PAIR(CP_CYAN));
-    printw("  retry=");
-    int rt_cp = latest.tx_retry > 2 ? CP_WARN : CP_GOOD;
-    attron(COLOR_PAIR(rt_cp)); printw("%u", latest.tx_retry); attroff(COLOR_PAIR(rt_cp));
-    printw("  loss=");
-    attron(COLOR_PAIR(CP_CYAN)); printw("%u", latest.pkt_loss); attroff(COLOR_PAIR(CP_CYAN));
-    printw("  ts=");
-    attron(COLOR_PAIR(CP_CYAN)); printw("%u ms", latest.timestamp); attroff(COLOR_PAIR(CP_CYAN));
-
-    /* right col: decoded BSAU flags. CLIP=red, ELEC=red, OVRN=red,
-     * TX_SAT=yellow, CAL=cyan, FIRST=cyan, empty=green OK */
+    /* RIGHT col: decoded flag string */
     {
         char buf[64];
         wl_flags_decode(latest.flags, buf, sizeof(buf));
         int severe = (latest.flags &
                       (WL_FLAG_CLIPPING | WL_FLAG_ELEC_OFF | WL_FLAG_ADC_OVRN));
         int warn   = (latest.flags & WL_FLAG_TX_SAT);
-        int cp = buf[0] == '\0' ? CP_GOOD
-               : severe        ? CP_BAD
-               : warn          ? CP_WARN
-                               : CP_CYAN;
-        mvprintw(r, g_col_r, "%-*s",
-                 g_tui_w - g_col_r - 1,
-                 (buf[0] == '\0') ? "OK" : buf);
-        (void)cp;   /* color applied via next attr block if needed */
+        int cp = (buf[0] == '\0') ? CP_GOOD
+               : severe           ? CP_BAD
+               : warn             ? CP_WARN
+                                  : CP_CYAN;
         attron(COLOR_PAIR(cp) | A_BOLD);
-        mvprintw(r, g_col_r, "%s", (buf[0] == '\0') ? "OK" : buf);
+        mvprintw(r, g_col_r, "%s", (buf[0] == '\0') ? "OK  (no faults raised)" : buf);
         attroff(COLOR_PAIR(cp) | A_BOLD);
     }
     r++;
 
-    /* RX latency for the latest packet: how long ago did cpcu_io receive it? */
-    uint32_t rx_age_ms = 0;
+    /* Row 2: TX retry count */
     {
+        int rt_cp = (latest.tx_retry > 2) ? CP_WARN : CP_GOOD;
+        mvprintw(r, 1, "TX retries ");
+        attron(COLOR_PAIR(CP_DIM)); printw("(retry):   "); attroff(COLOR_PAIR(CP_DIM));
+        attron(COLOR_PAIR(rt_cp) | A_BOLD);
+        printw("%-4u", latest.tx_retry);
+        attroff(COLOR_PAIR(rt_cp) | A_BOLD);
+        attron(COLOR_PAIR(CP_DIM));
+        printw("  (nRF24 auto-ACK attempts, 0 = first try)");
+        attroff(COLOR_PAIR(CP_DIM));
+    }
+
+    /* Flag legend (right column, dim) — only show the bits that mean
+     * something on the v3 board so the operator knows what to look for. */
+    attron(COLOR_PAIR(CP_DIM));
+    mvprintw(r, g_col_r, "bits: CLIP ELEC OVRN TX_SAT CAL FIRST");
+    attroff(COLOR_PAIR(CP_DIM));
+    r++;
+
+    /* Row 3: per-packet packet-loss counter from BSAU */
+    mvprintw(r, 1, "BSAU pkt loss ");
+    attron(COLOR_PAIR(CP_DIM)); printw("(loss):  "); attroff(COLOR_PAIR(CP_DIM));
+    attron(COLOR_PAIR(latest.pkt_loss > 0 ? CP_WARN : CP_GOOD) | A_BOLD);
+    printw("%-4u", latest.pkt_loss);
+    attroff(COLOR_PAIR(latest.pkt_loss > 0 ? CP_WARN : CP_GOOD) | A_BOLD);
+    attron(COLOR_PAIR(CP_DIM));
+    printw("  (BSAU's own retry-exhausted counter since boot)");
+    attroff(COLOR_PAIR(CP_DIM));
+
+    attron(COLOR_PAIR(CP_DIM));
+    mvprintw(r, g_col_r, "severe=red  warn=yellow  info=cyan  none=green");
+    attroff(COLOR_PAIR(CP_DIM));
+    r++;
+
+    /* Row 4: BSAU timestamp */
+    mvprintw(r, 1, "BSAU timestamp ");
+    attron(COLOR_PAIR(CP_DIM)); printw("(ts): "); attroff(COLOR_PAIR(CP_DIM));
+    attron(COLOR_PAIR(CP_CYAN) | A_BOLD);
+    printw("%-5u ms", latest.timestamp);
+    attroff(COLOR_PAIR(CP_CYAN) | A_BOLD);
+    attron(COLOR_PAIR(CP_DIM));
+    printw("  (BSAU's millisecond clock, wraps at 65 s)");
+    attroff(COLOR_PAIR(CP_DIM));
+    r++;
+
+    /* Row 5: CPCU rx age + battery summary */
+    {
+        uint32_t rx_age_ms = 0;
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);
         uint64_t now_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
         if(latest.rx_time_us > 0 && now_us > latest.rx_time_us)
             rx_age_ms = (uint32_t)((now_us - latest.rx_time_us) / 1000ULL);
-    }
-    mvprintw(r, 1, "rx_age=");
-    attron(COLOR_PAIR(rx_age_ms > 50 ? CP_WARN : CP_CYAN));
-    printw("%u ms", rx_age_ms);
-    attroff(COLOR_PAIR(rx_age_ms > 50 ? CP_WARN : CP_CYAN));
-    printw("  vbat=");
-    // attron(COLOR_PAIR(CP_CYAN)); printw("%u", latest.vbat_raw); attroff(COLOR_PAIR(CP_CYAN));
-    printw("  batt=");
-    attron(COLOR_PAIR(batt_color(latest.flags)) | A_BOLD);
-    printw("%s", batt_str(latest.flags));
-    attroff(COLOR_PAIR(batt_color(latest.flags)) | A_BOLD);
-    r++;
 
-    mvprintw(r, 1, "ch[0-3]: ");
+        mvprintw(r, 1, "RX age ");
+        attron(COLOR_PAIR(CP_DIM)); printw("(rx_age):      "); attroff(COLOR_PAIR(CP_DIM));
+        attron(COLOR_PAIR(rx_age_ms > 50 ? CP_WARN : CP_CYAN) | A_BOLD);
+        printw("%-4u ms", rx_age_ms);
+        attroff(COLOR_PAIR(rx_age_ms > 50 ? CP_WARN : CP_CYAN) | A_BOLD);
+        attron(COLOR_PAIR(CP_DIM));
+        printw("  (how long ago CPCU received this packet)");
+        attroff(COLOR_PAIR(CP_DIM));
+
+        mvprintw(r, g_col_r, "Battery: ");
+        attron(COLOR_PAIR(batt_color(latest.flags)) | A_BOLD);
+        printw("%s", batt_str(latest.flags));
+        attroff(COLOR_PAIR(batt_color(latest.flags)) | A_BOLD);
+        attron(COLOR_PAIR(CP_DIM));
+        printw("  (BSAU pack — v3: not sampled, status from flags)");
+        attroff(COLOR_PAIR(CP_DIM));
+    }
+    r += 2;
+
+    /* Row 6: ADC samples for all 8 channels — single line each side */
+    attron(COLOR_PAIR(CP_DIM));
+    mvprintw(r, 1, "ADC samples (raw 0..4095, latest of 4 per packet):");
+    attroff(COLOR_PAIR(CP_DIM));
+    r++;
+    mvprintw(r, 1, "ch0..3:  ");
     attron(COLOR_PAIR(CP_CYAN));
-    printw("%4u %4u %4u %4u",
+    printw("%4u  %4u  %4u  %4u",
            latest.samples[0].ch[0], latest.samples[0].ch[1],
            latest.samples[0].ch[2], latest.samples[0].ch[3]);
     attroff(COLOR_PAIR(CP_CYAN));
-    printw("   ch[4-7]: ");
+    mvprintw(r, g_col_r, "ch4..7:  ");
     attron(COLOR_PAIR(CP_CYAN));
-    printw("%4u %4u %4u %4u",
+    printw("%4u  %4u  %4u  %4u",
            latest.samples[0].ch[4], latest.samples[0].ch[5],
            latest.samples[0].ch[6], latest.samples[0].ch[7]);
     attroff(COLOR_PAIR(CP_CYAN));
@@ -2298,6 +2394,62 @@ void draw_page_config(int r, IPC_Context *ipc)
         ED_Render(r);
         return;       /* editor rendered; spec sheet skipped */
     }
+
+    draw_hline(r - 1, 0, g_tui_w);
+
+    /*==================== LIVE GESTURE CONFIG (from cpcu_dsp.py) ====================
+     * cpcu_dsp.py writes a pre-formatted text digest of gestures.json
+     * to /tmp/cpcu_gestures_digest.txt at startup (and after the future
+     * SIGHUP reload). The TUI just opens the file and prints it line
+     * by line — this avoids embedding a JSON parser in C. If the file
+     * is missing (DSP not running, or older version), the section
+     * falls back to a single hint line. */
+    draw_section(r, 1, "LIVE GESTURE CONFIG (from cpcu_dsp.py — see config/gestures.json)");
+    r++;
+    {
+        FILE *df = fopen("/tmp/cpcu_gestures_digest.txt", "r");
+        if(!df)
+        {
+            attron(COLOR_PAIR(CP_DIM));
+            mvprintw(r, 1,
+                "digest not available — start cpcu_dsp.py to populate "
+                "/tmp/cpcu_gestures_digest.txt");
+            attroff(COLOR_PAIR(CP_DIM));
+            r++;
+        }
+        else
+        {
+            char line[256];
+            while(r < g_term_h - 1 && fgets(line, sizeof(line), df))
+            {
+                /* strip newline */
+                size_t L = strlen(line);
+                while(L > 0 && (line[L-1] == '\n' || line[L-1] == '\r'))
+                    line[--L] = '\0';
+                if(L == 0) { r++; continue; }
+                /* Section headers (UPPERCASE first char + no leading
+                 * spaces) get a bold accent; group sub-headers
+                 * ("  [right_arm]") get cyan; everything else dim. */
+                int cp = CP_DIM;
+                int bold = 0;
+                if(line[0] == '#') {
+                    cp = CP_DIM;  /* comment row */
+                } else if(line[0] != ' ' && line[0] != '\0') {
+                    cp = CP_HEADER; bold = 1;
+                } else if(strstr(line, "[") && strstr(line, "]")) {
+                    cp = CP_CYAN;   bold = 1;
+                }
+                attron(COLOR_PAIR(cp) | (bold ? A_BOLD : 0));
+                mvprintw(r, 1, "%.*s", g_tui_w - 2, line);
+                attroff(COLOR_PAIR(cp) | (bold ? A_BOLD : 0));
+                r++;
+            }
+            fclose(df);
+        }
+    }
+    r++;
+
+    draw_hline(r - 1, 0, g_tui_w);
 
     /*==================== BSAU SIDE ====================*/
     draw_section(r, 1,       "BSAU (BIOSIGNAL ACQUISITION UNIT)");

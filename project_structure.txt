@@ -1,0 +1,106 @@
+cpcu_v3
+├── config
+│   ├── audio_cues
+│   │   ├── tone_ext.wav
+│   │   ├── tone_flex.wav
+│   │   ├── tone_hand.wav
+│   │   ├── tone_transition.wav
+│   │   ├── voice_flex.wav
+│   │   ├── voice_grip.wav
+│   │   ├── voice_open.wav
+│   │   └── voice_rest.wav
+│   ├── gestures.json
+│   └── runtime.json
+├── datasets
+├── docs
+│   ├── ARCHITECTURE.md
+│   ├── MANUAL.md
+│   ├── README.md
+│   ├── TESTING.md
+│   ├── USER_GUIDE.md
+│   └── WEB_DASHBOARD.md
+├── include
+│   ├── cpcu_config.h
+│   ├── cpcu_ipc.h
+│   ├── cpcu_json.h
+│   ├── cpcu_log.h
+│   ├── cpcu_pca9685.h
+│   ├── cpcu_safety.h
+│   ├── cpcu_smooth.h
+│   ├── cpcu_tui.h
+│   ├── cpcu_tui_editor.h
+│   ├── cpcu_tui_freq.h
+│   ├── demo_signals.h
+│   └── mongoose_stub.h
+├── log
+├── models
+│   └── velocity_map.json
+├── nrf
+│   ├── nrf24l01.c
+│   ├── nrf24l01.h
+│   ├── nrf24l01_linux.c
+│   ├── nrf24l01_linux.h
+│   ├── nrf24l01_test.c
+│   └── nrf24l01_test.h
+├── python
+│   ├── bsau_dataset_collector.py
+│   ├── cpcu_audio_daemon.py
+│   ├── cpcu_calibrate.py
+│   ├── cpcu_dsp.py
+│   └── cpcu_ipc_bridge.py
+├── scripts
+│   ├── _default_runtime_json.sh
+│   ├── add_gesture.sh
+│   ├── calibrate.sh
+│   ├── configure.sh
+│   ├── generate_voice_cues.sh
+│   ├── grip_tune.sh
+│   ├── run_tests.sh
+│   ├── set_channels.sh
+│   ├── setup_audio.sh
+│   ├── setup_pi.sh
+│   ├── setup_uart.sh
+│   └── uart_monitor.py
+├── src
+│   ├── cpcu_config.c
+│   ├── cpcu_io.c
+│   ├── cpcu_ipc.c
+│   ├── cpcu_json.c
+│   ├── cpcu_kernel.c
+│   ├── cpcu_log.c
+│   ├── cpcu_pca9685.c
+│   ├── cpcu_safety.c
+│   ├── cpcu_smooth.c
+│   ├── cpcu_tui.c
+│   ├── cpcu_tui_data.c
+│   ├── cpcu_tui_editor.c
+│   ├── cpcu_tui_render.c
+│   └── cpcu_ws.c
+├── test
+│   ├── config_testbench.c
+│   ├── editor_testbench.c
+│   ├── json_testbench.c
+│   ├── nrf_testbench.c
+│   ├── pca_testbench.c
+│   ├── safety_testbench.c
+│   ├── signal_testbench.c
+│   ├── smooth_testbench.c
+│   ├── system_test.py
+│   ├── test_codec.c
+│   ├── test_dsp_pipeline.py
+│   ├── test_ipc_bridge.py
+│   └── test_launch_commands.sh
+├── web
+│   ├── static
+│   │   └── index.html
+│   └── vendor
+│       ├── fetch.sh
+│       └── mongoose_stub.h
+├── wire
+│   ├── wireless_packet.c
+│   └── wireless_packet.h
+├── .gitignore
+├── CMakeLists.txt
+├── cmdline_additions.txt
+├── git_setup.sh
+└── launch.sh

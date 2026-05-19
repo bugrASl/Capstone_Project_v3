@@ -518,6 +518,37 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
                 "\"version\":\"v2.4.0\",\"ipc_version\":518}";
             mg_ws_send(c, welcome, strlen(welcome), WEBSOCKET_OP_TEXT);
         }
+        else if(mg_match(hm->uri, mg_str("/api/config"), NULL))
+        {
+            /* Serve gestures.json verbatim. Try the installed copy
+             * first (/opt/cpcu/gestures.json — symlink created by
+             * setup_pi.sh), fall back to the repo path. Streaming
+             * the file directly avoids parsing/serializing the JSON
+             * twice and keeps the endpoint trivially up-to-date on
+             * SIGHUP reloads. */
+            const char *paths[] = {
+                "/opt/cpcu/gestures.json",
+                "config/gestures.json",
+                NULL
+            };
+            const char *path = NULL;
+            for(int i = 0; paths[i]; i++)
+            {
+                if(access(paths[i], R_OK) == 0) { path = paths[i]; break; }
+            }
+            if(path)
+            {
+                struct mg_http_serve_opts opts = {0};
+                opts.mime_types = "json=application/json";
+                mg_http_serve_file(c, hm, path, &opts);
+            }
+            else
+            {
+                mg_http_reply(c, 404,
+                              "Content-Type: application/json\r\n",
+                              "{\"error\":\"gestures.json not found\"}\n");
+            }
+        }
         else
         {
             struct mg_http_serve_opts opts = { .root_dir = g_static_dir };

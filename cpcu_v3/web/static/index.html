@@ -74,6 +74,7 @@ body{font-family:'JetBrains Mono','Fira Code','Courier New',monospace;background
     <div class="tab on" onclick="page(0)">Arm</div>
     <div class="tab" onclick="page(1)">EMG</div>
     <div class="tab" onclick="page(2)">Diagnostics</div>
+    <div class="tab" onclick="page(3)">Config</div>
   </div>
   <span style="flex:1"></span>
   <span style="font-size:9px;color:var(--fg2)" id="fp">—</span>
@@ -121,6 +122,28 @@ body{font-family:'JetBrains Mono','Fira Code','Courier New',monospace;background
     <div class="dg-section"><div class="dg-title">latency</div><div id="d-lat"></div></div>
     <div class="dg-section"><div class="dg-title">safety</div><div id="d-saf"></div></div>
     <div class="dg-section"><div class="dg-title">dsp pipeline</div><div id="d-dsp"></div></div>
+  </div>
+  <!-- PAGE 4: CONFIG -->
+  <div class="p3 page" id="pg3">
+    <div class="dg-section">
+      <div class="dg-title">audio</div>
+      <div id="cfg-audio"></div>
+    </div>
+    <div class="dg-section">
+      <div class="dg-title">servo channels (PCA9685)</div>
+      <div id="cfg-servos"></div>
+    </div>
+    <div class="dg-section">
+      <div class="dg-title">gesture groups &amp; classifiers</div>
+      <div id="cfg-groups"></div>
+    </div>
+    <div class="dg-section">
+      <div class="dg-title">audio events</div>
+      <div id="cfg-events"></div>
+    </div>
+    <div class="dg-section" style="font-size:9px;color:var(--fg2)">
+      <span id="cfg-status">loading /api/config…</span>
+    </div>
   </div>
 </div>
 </div>
@@ -305,6 +328,113 @@ dOvf=d.diag.io_ring_overflows||0;dSafe=d.diag.io_safe_entries||0;dStall=d.diag.i
 }catch(e){}};
 }
 cn();
+
+// ============================================================================
+//  CONFIG PAGE — fetch /api/config (= gestures.json) and render categorized.
+// ============================================================================
+// Single fetch on page load, refresh button could be added later. The
+// endpoint is served by cpcu_ws.c and streams the live gestures.json from
+// /opt/cpcu/ (with config/ fallback), so a SIGHUP reload on the kernel
+// makes the next page-load show the new config.
+function escHtml(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function cfgRow(k,v,cls){return `<div class="dg-row"><span class="k">${escHtml(k)}</span><span class="v ${cls||''}">${v}</span></div>`}
+
+function renderConfig(cfg){
+  // ---- Audio ----
+  const am = cfg.audio_mode || 'off';
+  const av = cfg.audio_volume_pct ?? 80;
+  document.getElementById('cfg-audio').innerHTML =
+      cfgRow('mode', am, am==='off'?'warn':'good')
+    + cfgRow('volume', av + ' %')
+    + cfgRow('schema version', 'v' + (cfg.schema_version || '?'));
+
+  // ---- Servos: sort by pca_ch so the table reads in physical order ----
+  const sc = cfg.servo_channels || {};
+  const servoRows = Object.entries(sc)
+    .sort((a,b)=>(a[1].pca_ch||0)-(b[1].pca_ch||0))
+    .map(([nm, sd]) => {
+      const range = sd.max_us - sd.min_us;
+      return cfgRow(
+        `PCA${sd.pca_ch}  ${nm}`,
+        `min=${sd.min_us}  max=${sd.max_us}  neutral=${sd.neutral_us}  (range ${range} us)`
+      );
+    }).join('');
+  document.getElementById('cfg-servos').innerHTML = servoRows
+    || cfgRow('—', 'no servos defined');
+
+  // ---- Gesture groups ----
+  // Each group renders its own block: EMG channels, model, confidence,
+  // hysteresis (with the new defaults made obvious), and per-gesture
+  // servo mapping table. The "snap" + grip_firm_us per gesture is
+  // surfaced explicitly since they only matter for the gripper close.
+  const gg = cfg.gesture_groups || {};
+  let html = '';
+  for (const [gname, grp] of Object.entries(gg)) {
+    if (gname.startsWith('_')) continue;
+    const ec = grp.emg_channels || {};
+    const names = ec.names || [];
+    const active = ec.active || [];
+    const chList = active.map((c,i)=>`ch${c}=${names[i]||'?'}`).join(', ');
+    const cc = grp.confidence || {};
+    const hy = grp.hysteresis || {};
+
+    html += `<div style="margin-top:10px;padding:8px;border:1px solid var(--bd);border-radius:4px">`;
+    html += `<div style="font-weight:bold;color:var(--ac);margin-bottom:6px">${escHtml(gname)}</div>`;
+    html += cfgRow('EMG channels', chList || '(none)');
+    html += cfgRow('model', grp.model_path || '(unset)');
+    html += cfgRow('confidence', `curve=${cc.curve||'?'}  floor=${cc.floor_pct||'?'}%  ceil=${cc.ceil_pct||'?'}%`);
+    html += cfgRow('hysteresis (votes)',
+      `r→a=${hy.rest_to_active??'?'}  ` +
+      `a→r=${hy.active_to_rest??'?'}${hy.active_to_rest===0?' (INSTANT)':''}  ` +
+      `a→a=${hy.active_to_active??'?'}`);
+
+    // Per-gesture mapping table
+    const gx = grp.gestures || {};
+    const gestureRows = Object.entries(gx)
+      .filter(([n,_])=>!n.startsWith('_'))
+      .map(([gn, gd]) => {
+        const mode = gd.mode || '?';
+        const ch = gd.channels || {};
+        const drives = Object.entries(ch).map(([sn, sd]) => {
+          const rate = sd.rate_us_s ?? 0;
+          const snap = sd.snap ? ' SNAP' : '';
+          const dir = rate > 0 ? '↑' : rate < 0 ? '↓' : '·';
+          return `${sn} ${dir}${Math.abs(rate)}${snap}`;
+        }).join(', ') || (mode==='freeze' ? '(freeze)' : '—');
+        const firm = gd.grip_firm_us ? ` firm=${gd.grip_firm_us}us` : '';
+        const audio = (gd.audio && gd.audio.freq_hz)
+          ? ` ♪${gd.audio.freq_hz}Hz/${gd.audio.freq_ms||0}ms` : '';
+        return cfgRow(`  ${gn} [${mode}]`, drives + firm + audio);
+      }).join('');
+    html += gestureRows;
+    html += `</div>`;
+  }
+  document.getElementById('cfg-groups').innerHTML = html
+    || cfgRow('—', 'no gesture groups defined');
+
+  // ---- Audio events ----
+  const ae = cfg.audio_events || {};
+  const evRows = Object.entries(ae)
+    .filter(([k,_])=>!k.startsWith('_'))
+    .sort((a,b)=>(a[1].priority||9)-(b[1].priority||9))
+    .map(([nm, ev]) => cfgRow(
+      `[P${ev.priority||'?'}] ${nm}`,
+      `${ev.voice||'(no voice)'}  ♪${ev.freq_hz||0}Hz/${ev.freq_ms||0}ms`
+    )).join('');
+  document.getElementById('cfg-events').innerHTML = evRows
+    || cfgRow('—', 'no audio events');
+
+  document.getElementById('cfg-status').textContent =
+    `loaded /api/config: ${Object.keys(gg).length} group(s), ${Object.keys(sc).length} servo(s)`;
+}
+
+fetch('/api/config')
+  .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)))
+  .then(renderConfig)
+  .catch(e => {
+    document.getElementById('cfg-status').textContent =
+      'failed to load /api/config: ' + e.message;
+  });
 
 function rz(){const w=cv.parentElement.clientWidth,h=cv.parentElement.clientHeight;R.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix()}
 onresize=rz;rz();

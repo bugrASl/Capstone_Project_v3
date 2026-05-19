@@ -1282,25 +1282,43 @@ cmd_ws() {
     log "Step 3/4: ${C_GRN}Static files at ${static_dir}${C_RST}"
 
     # ── Step 4: Start the dashboard ──
-    local pi_ip
-    pi_ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    # Discover every routable LAN IP — `hostname -I` returns them all
+    # space-separated. We skip IPv6 (contains ':'), the docker/podman
+    # bridge ranges (172.17.x, 172.18.x, ...), and link-local autoconf
+    # (169.254.x). Whatever's left is what a teammate's laptop can
+    # actually reach on the Wi-Fi.
     local pi_host
     pi_host="${HOSTNAME:-$(hostname 2>/dev/null)}"
+    local all_ips
+    all_ips=$(hostname -I 2>/dev/null || echo "")
+    local lan_ips=()
+    for ip in ${all_ips}; do
+        case "${ip}" in
+            *:*)            continue ;;          # IPv6
+            127.*)          continue ;;          # loopback
+            169.254.*)      continue ;;          # APIPA / link-local
+            172.1[6-9].*|172.2[0-9].*|172.3[01].*) continue ;;  # docker default
+            "")             continue ;;
+            *)              lan_ips+=("${ip}") ;;
+        esac
+    done
 
-    log "Step 4/4: ${C_GRN}Starting web dashboard...${C_RST}"
+    log "Step 4/4: ${C_GRN}Starting web dashboard on port 8765...${C_RST}"
     echo
-    echo -e "  ${C_BLD}╔══════════════════════════════════════════════════════════╗${C_RST}"
-    echo -e "  ${C_BLD}║${C_RST}                                                          ${C_BLD}║${C_RST}"
-    echo -e "  ${C_BLD}║${C_RST}   Open in any browser on the same network:               ${C_BLD}║${C_RST}"
-    echo -e "  ${C_BLD}║${C_RST}                                                          ${C_BLD}║${C_RST}"
-    echo -e "  ${C_BLD}║${C_RST}      ${C_GRN}${C_BLD}http://${pi_ip}:8765${C_RST}                          ${C_BLD}║${C_RST}"
-    echo -e "  ${C_BLD}║${C_RST}                                                          ${C_BLD}║${C_RST}"
-    echo -e "  ${C_BLD}║${C_RST}   or: ${C_CYN}http://${pi_host}.local:8765${C_RST}  (if mDNS works)   ${C_BLD}║${C_RST}"
-    echo -e "  ${C_BLD}║${C_RST}                                                          ${C_BLD}║${C_RST}"
-    echo -e "  ${C_BLD}║${C_RST}   Anyone on your LAN can view (read-only, multi-viewer). ${C_BLD}║${C_RST}"
-    echo -e "  ${C_BLD}║${C_RST}   To restrict: --bind ws://127.0.0.1:8765                ${C_BLD}║${C_RST}"
-    echo -e "  ${C_BLD}║${C_RST}                                                          ${C_BLD}║${C_RST}"
-    echo -e "  ${C_BLD}╚══════════════════════════════════════════════════════════╝${C_RST}"
+    echo -e "  ${C_BLD}── CPCU dashboard URLs ──${C_RST}"
+    if [ "${#lan_ips[@]}" -gt 0 ]; then
+        echo "    Share with anyone on the same Wi-Fi:"
+        for ip in "${lan_ips[@]}"; do
+            echo -e "      ${C_GRN}${C_BLD}http://${ip}:8765${C_RST}"
+        done
+    else
+        warn "No routable LAN address found — is the Pi connected to Wi-Fi/Ethernet?"
+        echo "    Loopback only: http://127.0.0.1:8765"
+    fi
+    echo -e "    mDNS fallback (Bonjour/Avahi):  ${C_CYN}http://${pi_host}.local:8765${C_RST}"
+    echo
+    echo "  Anyone on this LAN can view (read-only, multi-viewer)."
+    echo "  Lock down to this Pi only with:  ./launch.sh web --bind ws://127.0.0.1:8765"
     echo
 
     # If kernel not running, start it in tmux alongside the dashboard

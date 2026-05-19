@@ -9,12 +9,12 @@
 ##   Pi 5 GND       (pin 14)  →  Adapter GND
 ##
 ##   Do NOT connect adapter VCC to Pi (Pi has its own power).
-##   Baud: 115200 8N1.
+##   Baud: 921600 8N1.
 ##
 ##   On host PC:
-##     Linux:   screen /dev/ttyUSB0 115200
-##     macOS:   screen /dev/tty.usbserial* 115200
-##     Windows: PuTTY → Serial → COM port → 115200
+##     Linux:   screen /dev/ttyUSB0 921600
+##     macOS:   screen /dev/tty.usbserial* 921600
+##     Windows: PuTTY → Serial → COM port → 921600
 set -euo pipefail
 
 G='\033[32m'; Y='\033[33m'; C='\033[36m'; R='\033[31m'; N='\033[0m'
@@ -114,10 +114,10 @@ echo -e "  ${C}Wiring:${N}"
 echo "    Pi GPIO14 TX (pin  8)  →  USB-UART adapter RX"
 echo "    Pi GPIO15 RX (pin 10)  →  USB-UART adapter TX (optional)"
 echo "    Pi GND       (pin 14)  →  USB-UART adapter GND"
-echo "    Baud: 115200 8N1"
+echo "    Baud: 921600 8N1"
 echo
 echo -e "  ${C}Host PC:${N}"
-echo "    Linux:   screen /dev/ttyUSB0 115200"
-echo "    Windows: PuTTY → Serial → COM port → 115200"
+echo "    Linux:   screen /dev/ttyUSB0 921600"
+echo "    Windows: PuTTY → Serial → COM port → 921600"
 echo "    Or:      python3 scripts/uart_monitor.py --port /dev/ttyUSB0"
 echo
