@@ -473,11 +473,12 @@ int main(int argc, char *argv[])
                 if(uart_fd >= 0)
                 {
                     char ubuf[128];
+                    WL_SampleSet *s = &pkt.samples[0];
                     int ulen = snprintf(ubuf, sizeof(ubuf),
                         "%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
                         pkt.seq,
-                        pkt.ch[0][0], pkt.ch[1][0], pkt.ch[2][0], pkt.ch[3][0],
-                        pkt.ch[4][0], pkt.ch[5][0], pkt.ch[6][0], pkt.ch[7][0]);
+                        s->ch[0], s->ch[1], s->ch[2], s->ch[3],
+                        s->ch[4], s->ch[5], s->ch[6], s->ch[7]);
                     write(uart_fd, ubuf, ulen);
                 }
             }

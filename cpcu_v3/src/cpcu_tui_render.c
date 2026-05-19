@@ -1241,7 +1241,7 @@ void draw_page_health(int r, IPC_Context *ipc,
     IPC_SensorEntry latest;
     memset(&latest, 0, sizeof(latest));
     if(head > 0) latest = ipc->ring[(head - 1) & IPC_SENSOR_RING_MASK];
-    float batt_v = 0.0f;  /* v3: battery not sampled */
+    /* v3: battery not sampled */
 
     uint32_t hb_age_ms = 0;
     {
