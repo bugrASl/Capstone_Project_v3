@@ -54,11 +54,7 @@ emit_default_runtime_json() {
     "// grip_open_us": "Soft-grip fully-open pulse width.",
     "grip_open_us": 1500,
     "// grip_stall_recover_ms": "Time before stall watchdog retreats to grip_touch_us.",
-    "grip_stall_recover_ms": 2000,
-        "rest":         [ 0, 0, 0, 0, 0, 0 ],
-        "biceps_flex":  [ 0, 200, 0, 0, 0, 0 ],
-        "hand_flex":    [ 0, 0, 0, 100, 100, 100 ]
-    }
+    "grip_stall_recover_ms": 2000
 }
 RUNTIMEEOF
     return $?

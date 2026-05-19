@@ -393,6 +393,46 @@ def discover_model(model_path=""):
 # Path: /tmp/cpcu_gestures_digest.txt   (re-written on every spawn)
 
 GESTURES_DIGEST_PATH = "/tmp/cpcu_gestures_digest.txt"
+SERVO_NAMES_PATH     = "/tmp/cpcu_servo_names.txt"
+GROUP_STATE_PATH     = "/tmp/cpcu_group_state.txt"
+
+
+def _write_servo_names(servo_channels):
+    """Publish servo names (sorted by pca_ch, one per line) for the C
+    TUI to read instead of using compile-time SERVO_NAMES[]."""
+    try:
+        sc = sorted(servo_channels.items(),
+                    key=lambda x: x[1].get("pca_ch", 0))
+        with open(SERVO_NAMES_PATH, "w") as f:
+            for name, _sd in sc[:NUM_SERVOS]:
+                f.write(name + "\n")
+    except Exception:
+        pass
+
+
+def write_group_state_digest(group_states):
+    """Publish one line per group with current state + top-class confs
+    for the TUI's DSP/AI page. Called every inference tick (cheap —
+    writes <500 bytes to /tmp on a tmpfs).
+
+    Format per line:
+        <group_name>\\t<current_state>\\t<conf_pct>\\t<cls0>:<p0>,<cls1>:<p1>,...
+    """
+    try:
+        lines = []
+        for gst in group_states:
+            classes = ([str(c) for c in gst.model.classes_]
+                       if gst.model is not None else [])
+            confs   = gst.class_conf or []
+            pairs   = ",".join(
+                f"{classes[i] if i < len(classes) else f'c{i}'}:{int(confs[i]*100)}"
+                for i in range(len(confs)))
+            lines.append(f"{gst.name}\t{gst.current_state}\t"
+                         f"{gst.conf_pct}\t{pairs}")
+        with open(GROUP_STATE_PATH, "w") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception:
+        pass
 
 
 def _write_gestures_digest(group_states, servo_channels):
@@ -1105,6 +1145,7 @@ def run_inference(verbose=False, operator="default"):
     # digest is rewritten on every cpcu_dsp.py launch (and would also
     # be rewritten on SIGHUP if the kernel propagated SIGHUP to us).
     _write_gestures_digest(group_states, servo_channels)
+    _write_servo_names(servo_channels)
 
     # ── IPC ──
     ipc = IPCBridge()
@@ -1153,6 +1194,11 @@ def run_inference(verbose=False, operator="default"):
                 _features_and_inference(gst, rms_8ch, ipc)
                 if gi == 0:
                     _publish_primary_state(ipc, gst)
+
+            # Publish per-group state for the TUI's DSP/AI page. The
+            # IPC export only carries one group's prediction (the
+            # primary), so we drop a tiny /tmp file with all of them.
+            write_group_state_digest(group_states)
 
             primary = group_states[0]
             _uart_send_prediction(primary.name,

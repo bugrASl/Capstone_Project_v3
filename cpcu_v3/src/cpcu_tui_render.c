@@ -68,9 +68,44 @@ void layout_update(void)
 
 /*============= §1 SERVO + CLASS NAMES (definitions) =======================================*/
 
-const char     *SERVO_NAMES[]   =   { "Base", "Upper", "Last", "Jnt-1", "Jnt-2", "Grip" };
+/* Servo display names. The fallback values below are used until
+ * cpcu_dsp.py drops /tmp/cpcu_servo_names.txt on its first start;
+ * tui_reload_servo_names() reads that file and rewrites this array
+ * so the TUI shows whatever names are in gestures.json (Base, Elbow,
+ * Forearm, Wrist1, Wrist2, Gripper — sorted by pca_ch). */
+#define TUI_SERVO_NAME_MAX 16
+static char     g_servo_name_buf[6][TUI_SERVO_NAME_MAX] = {
+    "Base", "Upper", "Last", "Jnt-1", "Jnt-2", "Grip"
+};
+const char     *SERVO_NAMES[]   =   {
+    g_servo_name_buf[0], g_servo_name_buf[1], g_servo_name_buf[2],
+    g_servo_name_buf[3], g_servo_name_buf[4], g_servo_name_buf[5]
+};
 const uint16_t  SERVO_MIN[]     =   {  498, 1074, 1074, 1001, 1001,  976 };
 const uint16_t  SERVO_MAX[]     =   { 2500, 1953, 1953, 2002, 2002, 1733 };
+
+/* Re-read /tmp/cpcu_servo_names.txt — one servo name per line, sorted
+ * by pca_ch. Idempotent and cheap; called on every page-draw of the
+ * pages that print servo names (DSP/AI, CONFIG, OVERVIEW). */
+static void tui_reload_servo_names(void)
+{
+    FILE *f = fopen("/tmp/cpcu_servo_names.txt", "r");
+    if(!f) return;
+    char line[64];
+    int  i = 0;
+    while(i < 6 && fgets(line, sizeof(line), f))
+    {
+        size_t L = strlen(line);
+        while(L > 0 && (line[L-1] == '\n' || line[L-1] == '\r'))
+            line[--L] = '\0';
+        if(L == 0) continue;
+        if(L >= TUI_SERVO_NAME_MAX) L = TUI_SERVO_NAME_MAX - 1;
+        memcpy(g_servo_name_buf[i], line, L);
+        g_servo_name_buf[i][L] = '\0';
+        i++;
+    }
+    fclose(f);
+}
 
 const char     *CLS_NAMES[]     =   {
     /* Indices 0-3: model.classes_ order is scikit-learn alphabetical
@@ -626,6 +661,7 @@ void draw_page_overview(int r, IPC_Context *ipc,
                                uint32_t pkt_rate, float loss_rate,
                                uint32_t up_h, uint32_t up_m, uint32_t up_s)
 {
+    tui_reload_servo_names();
     uint8_t  sys_state  =   atomic_load(&ipc->ctrl->system_state);
     uint8_t  io_rdy     =   atomic_load(&ipc->ctrl->io_ready);
     uint8_t  dsp_rdy    =   atomic_load(&ipc->ctrl->dsp_ready);
@@ -1294,6 +1330,7 @@ void draw_page_radio(int r, IPC_Context *ipc,
 
 void draw_page_dsp(int r, IPC_Context *ipc)
 {
+    tui_reload_servo_names();
     uint8_t  dsp_rdy    =   atomic_load(&ipc->ctrl->dsp_ready);
     uint32_t dsp_inf    =   atomic_load(&ipc->diag->dsp_inferences);
     uint32_t dsp_lat    =   atomic_load(&ipc->diag->dsp_max_latency_us);
@@ -1375,55 +1412,87 @@ void draw_page_dsp(int r, IPC_Context *ipc)
 
     if(dsp_rdy)
     {
-        /* Pull the export region defensively — when DSP is ready but
-         * hasn't published yet (no BSAU samples / first window still
-         * filling), update_seq is 0 and all the export fields are
-         * zero. We still draw the section so the operator can see the
-         * pipeline is wired up and waiting, instead of a confusing
-         * "DSP export not available" message that contradicts the
-         * "DSP ready: YES" line above. */
-        char gname[IPC_MAX_GESTURE_NAME];
-        memcpy(gname, (const void *)ipc->dsp_export->gesture_name, sizeof(gname));
-        gname[IPC_MAX_GESTURE_NAME - 1] = '\0';
-        if(!gname[0]) snprintf(gname, sizeof(gname), "(no data)");
-
-        uint8_t  active = ipc->dsp_export->active_class;
-        uint32_t inf_us = ipc->dsp_export->inference_time_us;
-        bool     have_pred = (export_seq > 0);
-
+        /*==================== PER-GROUP GESTURE STATE ====================
+         * Read /tmp/cpcu_group_state.txt (written by cpcu_dsp.py on
+         * every inference tick) and render one block per group. Each
+         * line is:
+         *     <group>\t<state>\t<conf_pct>\t<cls0>:<p0>,<cls1>:<p1>,...
+         * With two groups (right_arm, left_arm) we get a stacked view
+         * of both classifiers simultaneously, since the additive
+         * velocity integrator means both can drive servos at once. */
         draw_hline(r - 1, 0, g_tui_w);
-        draw_section(r, 1, "ACTIVE GESTURE");
+        draw_section(r, 1, "ACTIVE GESTURE PER GROUP");
         r++;
 
-        mvprintw(r, 3, ">> ");
-        attron(COLOR_PAIR(have_pred ? CP_MAGENTA : CP_DIM) | A_BOLD);
-        printw("%-16s", gname);
-        attroff(COLOR_PAIR(have_pred ? CP_MAGENTA : CP_DIM) | A_BOLD);
-        printw("   confidence: ");
-        float ac = have_pred ? ipc->dsp_export->class_confidence[active] : 0.0f;
-        if(have_pred)
+        FILE *gf = fopen("/tmp/cpcu_group_state.txt", "r");
+        int   groups_drawn = 0;
+        if(gf)
         {
-            attron(COLOR_PAIR(ac > 0.8f ? CP_GOOD : ac > 0.5f ? CP_WARN : CP_BAD) | A_BOLD);
-            printw("%3d %%", (int)(ac * 100));
-            attroff(COLOR_PAIR(ac > 0.8f ? CP_GOOD : ac > 0.5f ? CP_WARN : CP_BAD) | A_BOLD);
+            char line[512];
+            while(fgets(line, sizeof(line), gf))
+            {
+                /* parse name\tstate\tconf_pct\tcls:p,cls:p,... */
+                char *p = line;
+                char *gname = p;
+                char *tab1 = strchr(p, '\t');
+                if(!tab1) continue;
+                *tab1 = '\0';
+                char *state = tab1 + 1;
+                char *tab2 = strchr(state, '\t');
+                if(!tab2) continue;
+                *tab2 = '\0';
+                char *conf_s = tab2 + 1;
+                char *tab3 = strchr(conf_s, '\t');
+                if(!tab3) continue;
+                *tab3 = '\0';
+                char *classes = tab3 + 1;
+                /* trim trailing newline */
+                size_t L = strlen(classes);
+                while(L > 0 && (classes[L-1] == '\n' || classes[L-1] == '\r'))
+                    classes[--L] = '\0';
+
+                int conf_pct = atoi(conf_s);
+                int conf_cp  = (conf_pct >= 80) ? CP_GOOD
+                              : (conf_pct >= 50) ? CP_WARN : CP_BAD;
+
+                mvprintw(r, 3, "[");
+                attron(COLOR_PAIR(CP_CYAN) | A_BOLD);
+                printw("%s", gname);
+                attroff(COLOR_PAIR(CP_CYAN) | A_BOLD);
+                printw("]  ");
+                attron(COLOR_PAIR(CP_MAGENTA) | A_BOLD);
+                printw("%-10s", state);
+                attroff(COLOR_PAIR(CP_MAGENTA) | A_BOLD);
+                printw("  conf: ");
+                attron(COLOR_PAIR(conf_cp) | A_BOLD);
+                printw("%3d %%", conf_pct);
+                attroff(COLOR_PAIR(conf_cp) | A_BOLD);
+                printw("    classes: ");
+                attron(COLOR_PAIR(CP_DIM));
+                printw("%s", classes);
+                attroff(COLOR_PAIR(CP_DIM));
+                r++;
+                groups_drawn++;
+            }
+            fclose(gf);
         }
-        else
+        if(groups_drawn == 0)
         {
             attron(COLOR_PAIR(CP_DIM));
-            printw("  --");
+            mvprintw(r, 3, "(no inference yet — waiting for first window to fill)");
             attroff(COLOR_PAIR(CP_DIM));
+            r++;
         }
-        printw("   inf time: ");
-        attron(COLOR_PAIR(inf_us > 50000 ? CP_WARN : CP_CYAN));
-        printw("%u us", inf_us);
-        attroff(COLOR_PAIR(inf_us > 50000 ? CP_WARN : CP_CYAN));
-
-        /* Show export_seq in parens so you can see it ticking */
-        printw("   seq#");
         attron(COLOR_PAIR(CP_DIM));
-        printw("%u", export_seq);
+        mvprintw(r, 3, "seq#%u    inf time: %u us", export_seq,
+                 ipc->dsp_export->inference_time_us);
         attroff(COLOR_PAIR(CP_DIM));
         r += 2;
+
+        /* For backward compatibility with the latency block below, keep
+         * `active` and `export_seq` semantics from the IPC export (primary
+         * group only — TUI shows the full per-group view above). */
+        uint8_t active = ipc->dsp_export->active_class;
 
         /*==================== END-TO-END LATENCY WATERFALL ====================
          * Each module measures or fixes its own stage; here we stitch them

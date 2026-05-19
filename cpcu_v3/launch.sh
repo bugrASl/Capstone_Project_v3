@@ -1046,6 +1046,36 @@ with_ws_preflight() {
 ws_window_cmd() {
     local sd
     sd="$(ws_static_dir)"
+    # Banner prints first so anyone tabbing to the WS pane sees the
+    # LAN URLs (for sharing on Wi-Fi) and the local loopback URL (for
+    # testing from a browser on the Pi itself) before cpcu_ws's own
+    # startup logs. The Pi's hostname-I output is computed inside the
+    # bash subshell so this stays current across DHCP renewals.
+    cat <<'BANNER_EOF'
+echo "════════════════════════════════════════════════════════════"
+echo "  CPCU WEB DASHBOARD — http server (cpcu_ws)"
+echo "════════════════════════════════════════════════════════════"
+echo
+echo "  Open in a browser on this Pi:"
+echo "    http://localhost:8765"
+echo "    http://127.0.0.1:8765"
+echo
+echo "  Share with teammates on the same Wi-Fi:"
+for ip in $(hostname -I 2>/dev/null); do
+    case "$ip" in
+        *:*|127.*|169.254.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) ;;
+        *) echo "    http://$ip:8765" ;;
+    esac
+done
+host="$(hostname 2>/dev/null)"
+[ -n "$host" ] && echo "  mDNS / Bonjour:    http://$host.local:8765"
+echo
+echo "  /api/config       — current gestures.json (categorized)"
+echo "  /                 — main dashboard"
+echo "  Press Ctrl-b 1 to switch back to SHELL pane, Ctrl-b d to detach."
+echo "════════════════════════════════════════════════════════════"
+echo
+BANNER_EOF
     echo "${BIN_DIR}/cpcu_ws --static ${sd}"
 }
 
@@ -2645,6 +2675,57 @@ if fhz > 0:
 # form `rename-gesture <old> <new>` is still accepted: it scans all
 # groups, renames only if exactly one match is found, otherwise asks
 # the user to disambiguate by passing the group name explicitly.
+cmd_set_pca_channel() {
+    local servo="${1:-}"
+    local newch="${2:-}"
+    if [ -z "$servo" ] || [ -z "$newch" ]; then
+        err "Usage: ./launch.sh set-pca-channel <servo_name> <pca_channel>"
+        echo "  Example: ./launch.sh set-pca-channel Gripper 12"
+        echo
+        echo "  Current servo -> pca_ch mapping:"
+        python3 -c "
+import json
+with open('${GS}') as f: g = json.load(f)
+for n, s in sorted(g.get('servo_channels', {}).items(),
+                   key=lambda x: x[1].get('pca_ch', 0)):
+    print(f'    {n:<10} -> PCA{s.get(\"pca_ch\", \"?\")}')"
+        exit 1
+    fi
+    python3 - "${GS}" "$servo" "$newch" << 'PYEOF'
+import json, sys
+gs_path, servo, newch_s = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    newch = int(newch_s)
+except ValueError:
+    print(f"  ERROR: pca_channel must be an integer (got '{newch_s}')")
+    sys.exit(1)
+if not (0 <= newch <= 15):
+    print(f"  ERROR: pca_channel must be in 0..15 (PCA9685 has 16 channels)")
+    sys.exit(1)
+with open(gs_path) as f: g = json.load(f)
+sc = g.get("servo_channels", {})
+if servo not in sc:
+    print(f"  ERROR: '{servo}' not found in servo_channels")
+    print(f"  Available: {list(sc.keys())}")
+    sys.exit(1)
+# Block if newch is already taken by a different servo
+for n, s in sc.items():
+    if n != servo and s.get("pca_ch") == newch:
+        print(f"  ERROR: PCA channel {newch} already used by '{n}'")
+        print(f"         Pick a different channel, or swap them first.")
+        sys.exit(1)
+old = sc[servo].get("pca_ch", "?")
+if old == newch:
+    print(f"  '{servo}' is already on PCA channel {newch}. Nothing to do.")
+    sys.exit(0)
+sc[servo]["pca_ch"] = newch
+with open(gs_path, "w") as f: json.dump(g, f, indent=4)
+print(f"  \033[32m✓\033[0m {servo}: PCA{old} -> PCA{newch}  (gestures.json updated)")
+print(f"  Run './launch.sh tui' — preflight will sync runtime.json automatically.")
+PYEOF
+}
+
+
 cmd_rename_gesture() {
     local a1="${1:-}" a2="${2:-}" a3="${3:-}"
     local group="" old="" new=""
@@ -3112,6 +3193,7 @@ case "${MODE}" in
     edit-motor)             cmd_edit_motor "$@" ;;
     rename-motor)           cmd_rename_motor "$@" ;;
     set-channels)           run_set_channels "$@" ;;
+    set-pca-channel)        cmd_set_pca_channel "$@" ;;
     set-model)              cmd_set_model "$@" ;;
     generate-cues)          run_generate_cues "$@" ;;
     audio)                  cmd_audio "$@" ;;
