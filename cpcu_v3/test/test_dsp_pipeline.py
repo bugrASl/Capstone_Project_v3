@@ -295,7 +295,14 @@ def test_gesture_servo_map():
     ASSERT(os.path.exists(gs_path), f"gestures.json exists at {gs_path}")
     with open(gs_path) as f:
         gs = json.load(f)
-    gestures = gs.get("gestures", {})
+    gg = gs.get("gesture_groups", {})
+    if gg:
+        # v5: merge all groups' gestures for validation
+        gestures = {}
+        for gname, gdef in gg.items():
+            gestures.update(gdef.get("gestures", {}))
+    else:
+        gestures = gs.get("gestures", {})
     servos = gs.get("servo_channels", {})
     ASSERT(len(gestures) >= 1, f"has {len(gestures)} gestures (>= 1)")
     ASSERT("rest" in gestures, "'rest' gesture exists")

@@ -23,7 +23,7 @@ read -rp "  Gesture name (lowercase, no spaces): " GNAME
 GNAME=$(echo "$GNAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '_')
 
 if python3 -c "
-import json
+import json, os
 with open('${GS}') as f: g = json.load(f)
 if '${GNAME}' in g.get('gestures', {}):
     print('EXISTS')
@@ -75,7 +75,7 @@ echo "  Audio feedback:"
 
 # pick next unused frequency (step by 110 Hz from 330)
 USED_FREQS=$(python3 -c "
-import json
+import json, os
 with open('${GS}') as f: g = json.load(f)
 for gd in g.get('gestures',{}).values():
     a = gd.get('audio',{})
@@ -103,7 +103,7 @@ fi
 
 # ── step 5: write to gestures.json ──
 python3 << PYEOF
-import json
+import json, os
 
 with open("${GS}") as f:
     gs = json.load(f)
@@ -118,7 +118,19 @@ gesture = {
     }
 }
 
-gs["gestures"]["${GNAME}"] = gesture
+# find first group or create one
+gg = gs.setdefault("gesture_groups", {})
+if not gg:
+    gg["gesture_0"] = {"gestures": {}, "emg_channels": {"active": [0,1,2]},
+                        "model_path": "", "confidence": {"curve":"quadratic","floor_pct":40,"ceil_pct":85},
+                        "hysteresis": {"rest_to_active":4,"active_to_rest":2,"active_to_active":6}}
+# add to first group by default (use --group to specify)
+group = os.environ.get("CPCU_GESTURE_GROUP", list(gg.keys())[0])
+if group not in gg:
+    print(f"Group '{group}' not found. Available: {list(gg.keys())}")
+    exit(1)
+gg[group].setdefault("gestures", {})["${GNAME}"] = gesture
+print(f"  Added to group: {group}")
 
 with open("${GS}", "w") as f:
     json.dump(gs, f, indent=4)
