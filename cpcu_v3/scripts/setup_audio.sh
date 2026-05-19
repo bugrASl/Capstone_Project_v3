@@ -31,12 +31,29 @@
 ##   internal oscillator so no external master clock is needed.
 set -euo pipefail
 
-G='\033[32m'; Y='\033[33m'; C='\033[36m'; N='\033[0m'
+G='\033[32m'; Y='\033[33m'; C='\033[36m'; R='\033[31m'; N='\033[0m'
 ok()   { echo -e "  ${G}✓${N} $*"; }
 info() { echo -e "  ${C}▶${N} $*"; }
 warn() { echo -e "  ${Y}⚠${N} $*"; }
+err()  { echo -e "  ${R}✗${N} $*" >&2; }
 
-BOOT_CFG="/boot/firmware/config.txt"
+# Boot-config path differs across Pi OS releases:
+#   Bookworm+ (2023+) : /boot/firmware/config.txt
+#   Bullseye and older: /boot/config.txt
+# Pick whichever actually exists. If neither does, bail with a useful
+# message instead of letting `cp` fail and crash the script later.
+BOOT_CFG=""
+for p in /boot/firmware/config.txt /boot/config.txt; do
+    if [ -f "$p" ]; then
+        BOOT_CFG="$p"
+        break
+    fi
+done
+if [ -z "${BOOT_CFG}" ]; then
+    err "No Raspberry Pi boot config found at /boot/firmware/config.txt or /boot/config.txt"
+    err "  Not running on a Raspberry Pi? Audio setup is Pi-specific."
+    exit 1
+fi
 NEED_REBOOT=0
 
 echo

@@ -318,7 +318,21 @@ tmux_kill_existing() {
     if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
         log "Killing existing tmux session '$SESSION_NAME'..."
         tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
-        sleep 0.5
+        # Give tmux a moment to actually tear down — has-session returns
+        # immediately but the server may still be cleaning up sockets.
+        for i in 1 2 3 4 5; do
+            tmux has-session -t "$SESSION_NAME" 2>/dev/null || break
+            sleep 0.1
+        done
+    fi
+    # Also kill any zombie tmux processes that may be wedged on stale
+    # sockets from a previous crash — these can stop `new-session`
+    # from registering even though `has-session` says no session exists.
+    if pgrep -x tmux >/dev/null 2>&1 && \
+       ! tmux list-sessions >/dev/null 2>&1; then
+        warn "Found stale tmux server with no sessions — restarting it"
+        tmux kill-server 2>/dev/null || true
+        sleep 0.3
     fi
 }
 
@@ -339,13 +353,34 @@ tmux_create_with_kernel() {
     _cols=${_cols:-80}
     _rows=${_rows:-24}
 
-    # Pass CPCU_DSP_PATH explicitly through the tmux shell so the kernel
-    # inherits it even though tmux strips most env by default. cd to
-    # CPCU_ROOT first so the kernel's ./python/cpcu_dsp.py fallback also
-    # works in case the export is somehow lost.
+    # Wrap the kernel invocation in a holder shell that stays alive
+    # after the kernel exits. Without this, an immediate kernel crash
+    # (bad runtime.json, missing /opt/cpcu/config.json, segfault on
+    # startup) kills the only window in the session, and tmux destroys
+    # the session before we can apply `remain-on-exit on` — leaving the
+    # caller with the misleading "tmux refused to create session" error.
+    #
+    # The holder also prints a clearly-visible exit-code banner so the
+    # user sees the kernel's return value the moment they attach, instead
+    # of having to dig through the kernel log.
+    #
+    # The trailing `exec bash --login` gives a usable shell in the pane
+    # so the user can poke around (run `tail`, `cat`, etc.) without
+    # having to swap to the SHELL window.
+    local kernel_inner="cd ${CPCU_ROOT} && \
+export CPCU_DSP_PATH=\"${CPCU_DSP_PATH:-}\" && \
+taskset -c 0 ${BIN_DIR}/cpcu_kernel --log 2>&1 | tee -a ${kernel_log} ; \
+rc=\$? ; \
+printf '\\n\\033[31m========================================\\n' ; \
+printf '[KERNEL exited with code %d]\\n' \$rc ; \
+printf 'This pane stays open for inspection.\\n' ; \
+printf 'Ctrl-b 1 = SHELL window, Ctrl-b d = detach.\\n' ; \
+printf '========================================\\033[0m\\n\\n' ; \
+exec bash --login"
+
     tmux new-session -d -s "$SESSION_NAME" -n "KERNEL" \
         -x "$_cols" -y "$_rows" \
-        "bash -c 'cd ${CPCU_ROOT} && export CPCU_DSP_PATH=\"${CPCU_DSP_PATH:-}\" && exec taskset -c 0 ${BIN_DIR}/cpcu_kernel --log 2>&1 | tee -a ${kernel_log}'"
+        "bash -c '${kernel_inner}'"
 
     # Wait briefly for the new session to be reachable. tmux's set-option
     # calls below otherwise race with the daemon and emit harmless but

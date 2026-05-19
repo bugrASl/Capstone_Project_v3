@@ -121,8 +121,22 @@ echo "[4/6] Checking kernel configuration..."
 
 NEEDS_REBOOT=0
 
-CONFIG="/boot/firmware/config.txt"
-if [ -f "${CONFIG}" ]; then
+# Pi OS Bookworm moved /boot/* → /boot/firmware/*. Pick whichever
+# location actually has the boot files.
+CONFIG=""
+CMDLINE=""
+for d in /boot/firmware /boot; do
+    if [ -f "$d/config.txt" ] && [ -f "$d/cmdline.txt" ]; then
+        CONFIG="$d/config.txt"
+        CMDLINE="$d/cmdline.txt"
+        break
+    fi
+done
+if [ -z "${CONFIG}" ]; then
+    echo "  WARNING: no boot config found (looked at /boot/firmware/ and /boot/)"
+fi
+
+if [ -n "${CONFIG}" ] && [ -f "${CONFIG}" ]; then
     if ! grep -q "dtparam=spi=on" "${CONFIG}"; then
         echo "  Adding SPI enable to ${CONFIG}"
         echo "dtparam=spi=on" >> "${CONFIG}"
@@ -141,12 +155,9 @@ if [ -f "${CONFIG}" ]; then
         echo "dtoverlay=disable-bt" >> "${CONFIG}"
         NEEDS_REBOOT=1
     fi
-else
-    echo "  WARNING: ${CONFIG} not found"
 fi
 
-CMDLINE="/boot/firmware/cmdline.txt"
-if [ -f "${CMDLINE}" ]; then
+if [ -n "${CMDLINE}" ] && [ -f "${CMDLINE}" ]; then
     if ! grep -q "isolcpus" "${CMDLINE}"; then
         echo "  Adding core isolation to ${CMDLINE}"
         sed -i 's/$/ isolcpus=1,2,3 nohz_full=1,2,3 rcu_nocbs=1,2,3/' "${CMDLINE}"
@@ -154,8 +165,6 @@ if [ -f "${CMDLINE}" ]; then
     else
         echo "  Core isolation already configured"
     fi
-else
-    echo "  WARNING: ${CMDLINE} not found"
 fi
 
 ##============= PERMISSIONS ================================================================

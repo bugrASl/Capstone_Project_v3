@@ -17,13 +17,28 @@
 ##     Windows: PuTTY → Serial → COM port → 115200
 set -euo pipefail
 
-G='\033[32m'; Y='\033[33m'; C='\033[36m'; N='\033[0m'
+G='\033[32m'; Y='\033[33m'; C='\033[36m'; R='\033[31m'; N='\033[0m'
 ok()   { echo -e "  ${G}✓${N} $*"; }
 info() { echo -e "  ${C}▶${N} $*"; }
 warn() { echo -e "  ${Y}⚠${N} $*"; }
+err()  { echo -e "  ${R}✗${N} $*" >&2; }
 
-BOOT_CFG="/boot/firmware/config.txt"
-CMDLINE="/boot/firmware/cmdline.txt"
+# Pi OS Bookworm moved /boot/* to /boot/firmware/*. Pick whichever
+# config.txt + cmdline.txt actually exist on this system.
+BOOT_DIR=""
+for d in /boot/firmware /boot; do
+    if [ -f "$d/config.txt" ] && [ -f "$d/cmdline.txt" ]; then
+        BOOT_DIR="$d"
+        break
+    fi
+done
+if [ -z "${BOOT_DIR}" ]; then
+    err "No Raspberry Pi boot files found in /boot/firmware/ or /boot/"
+    err "  Not running on a Raspberry Pi? UART setup is Pi-specific."
+    exit 1
+fi
+BOOT_CFG="${BOOT_DIR}/config.txt"
+CMDLINE="${BOOT_DIR}/cmdline.txt"
 NEED_REBOOT=0
 
 echo
