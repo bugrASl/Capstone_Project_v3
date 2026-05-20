@@ -55,19 +55,25 @@ INPUT_FS_HZ     = 1000                              # BSAU 1 kHz packet rate
 TARGET_FS_HZ    = 200                               # after decimation
 DECIMATE_FACTOR = INPUT_FS_HZ // TARGET_FS_HZ       # 5
 WINDOW_MS       = 200
-STRIDE_MS       = 100
+# STRIDE_MS controls the inference rate: a new window emerges every
+# STRIDE_MS and triggers one inference per gesture_group (2 groups =
+# 2 sequential ML predictions). Each prediction takes ~50-60 ms on
+# Cortex-A76, so a stride < (groups × pred_ms) backs up the IPC ring.
+# 200 ms gives ≥80 ms headroom for two-group inference; reduces
+# command rate to 5 Hz, well above human reaction time (~250 ms).
+STRIDE_MS       = 200
 WINDOW_HI       = INPUT_FS_HZ  * WINDOW_MS // 1000  # 200 samples @ 1 kHz
-STRIDE_HI       = INPUT_FS_HZ  * STRIDE_MS // 1000  # 100 samples @ 1 kHz
+STRIDE_HI       = INPUT_FS_HZ  * STRIDE_MS // 1000  # 200 samples @ 1 kHz
 WINDOW_LO       = TARGET_FS_HZ * WINDOW_MS // 1000  # 40  samples @ 200 Hz
-BUFFER_SIZE     = WINDOW_HI * 4                     # 800 samples ring
+BUFFER_SIZE     = WINDOW_HI * 8                     # 1600-sample ring (more slack)
 
 # Hardware constants (matched to BSAU + cpcu_io)
 ADC_MIDRAIL     = 2048
 NUM_SERVOS      = 6
 NUM_EMG_CH      = 8
 SERVO_NEUTRAL   = 1500
-DRAIN_PERIOD_S  = 0.020                             # main loop period
-DRAIN_BATCH     = 200                               # max packets per drain
+DRAIN_PERIOD_S  = 0.010                             # main loop period (was 0.020)
+DRAIN_BATCH     = 512                               # max packets per drain (was 200)
 PROB_THRESH     = 0.65                              # min SVM prob to consider
 
 # Default servo limit arrays — overwritten by load_gestures()
