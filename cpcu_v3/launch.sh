@@ -614,7 +614,17 @@ tmux_verify_kernel_alive() {
 }
 
 tmux_add_window() {
-    tmux new-window -t "$SESSION_NAME" -n "$1" "$2" 2>/dev/null
+    # Show errors instead of swallowing them — a silent failure here
+    # means "phantom window" (the spawn fails but launch.sh thinks
+    # everything's fine and the user sees a missing pane).
+    local err
+    err=$(tmux new-window -t "$SESSION_NAME" -n "$1" "$2" 2>&1)
+    local rc=$?
+    if [ $rc -ne 0 ]; then
+        warn "tmux failed to create '$1' window: ${err:-rc=$rc}"
+        return $rc
+    fi
+    return 0
 }
 
 tmux_attach_at() {
