@@ -622,7 +622,28 @@ tmux_add_window() {
     local rc=$?
     if [ $rc -ne 0 ]; then
         warn "tmux failed to create '$1' window: ${err:-rc=$rc}"
+        warn "  command was: $2"
         return $rc
+    fi
+    # Force remain-on-exit ON for this specific window too, in case the
+    # session-level set-option got cleared somewhere. Without this a
+    # one-line holder script that exits in <50ms takes the window with
+    # it before the user can attach.
+    tmux set-window-option -t "${SESSION_NAME}:${1}" remain-on-exit on \
+        2>/dev/null || true
+
+    # Settle then verify the window actually exists. If tmux killed it
+    # already (rare — usually due to immediate exec failure), log loudly
+    # so the operator knows why a pane is missing instead of asking
+    # "where is my WS window?".
+    sleep 0.1
+    if ! tmux list-windows -t "$SESSION_NAME" -F '#W' 2>/dev/null \
+         | grep -qFx "$1"; then
+        warn "tmux window '$1' vanished immediately after creation"
+        warn "  command was: $2"
+        warn "  try running it manually to see the error:"
+        warn "    bash -c \"$2\""
+        return 1
     fi
     return 0
 }
