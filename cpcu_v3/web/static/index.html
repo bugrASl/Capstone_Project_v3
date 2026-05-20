@@ -74,7 +74,6 @@ body{font-family:'JetBrains Mono','Fira Code','Courier New',monospace;background
     <div class="tab on" onclick="page(0)">Arm</div>
     <div class="tab" onclick="page(1)">EMG</div>
     <div class="tab" onclick="page(2)">Diagnostics</div>
-    <div class="tab" onclick="page(3)">Config</div>
   </div>
   <span style="flex:1"></span>
   <span style="font-size:9px;color:var(--fg2)" id="fp">—</span>
@@ -123,28 +122,6 @@ body{font-family:'JetBrains Mono','Fira Code','Courier New',monospace;background
     <div class="dg-section"><div class="dg-title">safety</div><div id="d-saf"></div></div>
     <div class="dg-section"><div class="dg-title">dsp pipeline</div><div id="d-dsp"></div></div>
   </div>
-  <!-- PAGE 4: CONFIG -->
-  <div class="p3 page" id="pg3">
-    <div class="dg-section">
-      <div class="dg-title">audio</div>
-      <div id="cfg-audio"></div>
-    </div>
-    <div class="dg-section">
-      <div class="dg-title">servo channels (PCA9685)</div>
-      <div id="cfg-servos"></div>
-    </div>
-    <div class="dg-section">
-      <div class="dg-title">gesture groups &amp; classifiers</div>
-      <div id="cfg-groups"></div>
-    </div>
-    <div class="dg-section">
-      <div class="dg-title">audio events</div>
-      <div id="cfg-events"></div>
-    </div>
-    <div class="dg-section" style="font-size:9px;color:var(--fg2)">
-      <span id="cfg-status">loading /api/config…</span>
-    </div>
-  </div>
 </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -160,44 +137,115 @@ const GCOL=['var(--a)','var(--g)','var(--am)','var(--fg2)'];
 const K=2.5;
 function p2a(s,p){return((p-s.ne)/((s.mx-s.mn)/2))*1.2}
 
-// Three.js
+// Three.js — anthropomorphic 6-DOF arm
 const cv=document.getElementById('c'),R=new THREE.WebGLRenderer({canvas:cv,antialias:true});
 R.setPixelRatio(devicePixelRatio);R.setClearColor(0x0c0c10);R.shadowMap.enabled=true;
 const sc=new THREE.Scene(),cam=new THREE.PerspectiveCamera(45,1,1,5000);
-cam.position.set(400,300,500);cam.lookAt(0,150,0);
-sc.add(new THREE.AmbientLight(0x404050,.6));
-const dlt=new THREE.DirectionalLight(0xffffff,.8);dlt.position.set(200,400,300);dlt.castShadow=true;sc.add(dlt);
-sc.add(new THREE.GridHelper(600,30,0x222228,0x18181e));
-const mB=new THREE.MeshPhongMaterial({color:0x3a6fba,shininess:60}),
-mD=new THREE.MeshPhongMaterial({color:0x2a2a30,shininess:40}),
-mA=new THREE.MeshPhongMaterial({color:0x4a90d9,shininess:80,emissive:0x1a3050}),
-mG=new THREE.MeshPhongMaterial({color:0x444450,shininess:30});
-function cy(r1,r2,h,m){const o=new THREE.Mesh(new THREE.CylinderGeometry(r1,r2,h,16),m);o.castShadow=true;return o}
-function sp(r,m){return new THREE.Mesh(new THREE.SphereGeometry(r,12,12),m)}
-function bx(w,h,d,m){const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);o.castShadow=true;return o}
-const base=cy(40,45,43*K,mB);base.position.y=43*K/2;sc.add(base);
-const J=[];
-const j6=new THREE.Group();j6.position.y=43*K;sc.add(j6);J.push(j6);
-j6.add(sp(18,mA)).position.y=32*K/2;
-const j5=new THREE.Group();j5.position.y=32*K;j6.add(j5);J.push(j5);
-j5.add(cy(12,10,97.75*K,mB)).position.y=97.75*K/2;
-j5.add(sp(14,mA)).position.y=97.75*K;
-const j4=new THREE.Group();j4.position.y=97.75*K;j5.add(j4);J.push(j4);
-j4.add(cy(10,8,99*K,mD)).position.y=99*K/2;
-j4.add(sp(10,mA)).position.y=99*K;
-const j3=new THREE.Group();j3.position.y=99*K;j4.add(j3);J.push(j3);
-j3.add(cy(8,8,50*K,mB)).position.y=50*K/2;
-const j2=new THREE.Group();j2.position.y=50*K;j3.add(j2);J.push(j2);
-j2.add(bx(24,31.5*K,24,mD)).position.y=31.5*K/2;
-const j1=new THREE.Group();j1.position.y=31.5*K;j2.add(j1);J.push(j1);
-const fR=bx(6,40,8,mG);fR.position.set(0,20,12);j1.add(fR);
-const fL=bx(6,40,8,mG);fL.position.set(0,20,-12);j1.add(fL);
+cam.position.set(380,280,420);cam.lookAt(0,140,0);
+sc.add(new THREE.AmbientLight(0x40404a,.55));
+const dlt=new THREE.DirectionalLight(0xffffff,.85);dlt.position.set(250,500,300);dlt.castShadow=true;
+dlt.shadow.mapSize.width=1024;dlt.shadow.mapSize.height=1024;
+dlt.shadow.camera.left=-300;dlt.shadow.camera.right=300;dlt.shadow.camera.top=300;dlt.shadow.camera.bottom=-300;
+sc.add(dlt);
+sc.add(new THREE.DirectionalLight(0x4060a0,.25)).position.set(-200,200,-200);
+sc.add(new THREE.GridHelper(700,35,0x232328,0x16161c));
 
-let cT=.8,cP=.6,cD=650,drag=false,lx=0,ly=0;
+// Floor receives shadows
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(700,700),new THREE.ShadowMaterial({opacity:.35}));
+floor.rotation.x=-Math.PI/2;floor.receiveShadow=true;sc.add(floor);
+
+// Materials — distinguishable link colors so motion is legible.
+const M={
+  base:    new THREE.MeshPhongMaterial({color:0x2a2a32,shininess:50}),
+  link1:   new THREE.MeshPhongMaterial({color:0x3a6fba,shininess:70}),
+  link2:   new THREE.MeshPhongMaterial({color:0x2a5da0,shininess:70}),
+  joint:   new THREE.MeshPhongMaterial({color:0x4a90d9,shininess:100,emissive:0x0e2540}),
+  wrist:   new THREE.MeshPhongMaterial({color:0x6aa8e0,shininess:90}),
+  hand:    new THREE.MeshPhongMaterial({color:0x3a3a44,shininess:40}),
+  finger:  new THREE.MeshPhongMaterial({color:0xc0c0c8,shininess:80,emissive:0x1a1a20})
+};
+function cy(rT,rB,h,m){const o=new THREE.Mesh(new THREE.CylinderGeometry(rT,rB,h,24),m);o.castShadow=true;o.receiveShadow=true;return o}
+function sp(r,m){const o=new THREE.Mesh(new THREE.SphereGeometry(r,18,14),m);o.castShadow=true;return o}
+function bx(w,h,d,m){const o=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),m);o.castShadow=true;return o}
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Joint hierarchy. Each Group's position is the joint pivot; meshes
+ * attached to it are the LINK that comes after that joint. Children
+ * groups are positioned at the link's far end. This gives correct
+ * forward kinematics: rotating Jn at origin pivots Jn's link + all
+ * descendants around the joint pivot, which is exactly what a real
+ * servo does.
+ *
+ *   J[0] base yaw   (Y axis)  — Base servo
+ *   J[1] shoulder   (Z axis)  — Elbow servo  (lifts upper arm)
+ *   J[2] elbow      (Z axis)  — Forearm servo (lifts forearm)
+ *   J[3] wrist roll (Y axis)  — Wrist1 servo
+ *   J[4] wrist pitch(Z axis)  — Wrist2 servo
+ *   J[5] gripper aperture     — Gripper servo (drives finger offset)
+ * ────────────────────────────────────────────────────────────────────── */
+const J=[];
+
+// Static base column on the floor (no joint — the base SERVO is mounted at top)
+const baseColumn=cy(48,52,55,M.base);baseColumn.position.y=27.5;sc.add(baseColumn);
+// Mounting plate visual at top
+const basePlate=cy(45,45,8,M.base);basePlate.position.y=58;sc.add(basePlate);
+
+// J[0] — base yaw. Pivot at top of column.
+const j0=new THREE.Group();j0.position.y=62;sc.add(j0);J.push(j0);
+const j0Shell=cy(35,38,24,M.link1);j0Shell.position.y=12;j0.add(j0Shell);          // shoulder housing
+const j0Cap  =cy(30,30,4,M.joint); j0Cap.position.y=26;j0.add(j0Cap);             // mounting cap
+
+// J[1] — shoulder pitch. Pivot 18u above base, off-center on +X so the link clears the housing.
+const j1=new THREE.Group();j1.position.set(0,28,0);j0.add(j1);J.push(j1);
+const j1Knuckle=sp(22,M.joint);j1.add(j1Knuckle);                                   // visible knuckle
+// Upper arm link (extends up the +Y of this group). Use 2 cylinders for a "bone" feel.
+const upperArm=cy(13,15,140,M.link1);upperArm.position.y=80;j1.add(upperArm);
+const upperBand=cy(17,17,8,M.wrist);upperBand.position.y=80;j1.add(upperBand);     // mid band accent
+
+// J[2] — elbow. Pivot at the top of upper arm.
+const j2=new THREE.Group();j2.position.y=155;j1.add(j2);J.push(j2);
+const j2Knuckle=sp(18,M.joint);j2.add(j2Knuckle);
+const forearm=cy(10,12,115,M.link2);forearm.position.y=65;j2.add(forearm);
+const forearmBand=cy(14,14,7,M.wrist);forearmBand.position.y=65;j2.add(forearmBand);
+
+// J[3] — wrist roll. Pivot at end of forearm.
+const j3=new THREE.Group();j3.position.y=128;j2.add(j3);J.push(j3);
+const wristRollHousing=cy(14,14,24,M.link2);wristRollHousing.position.y=12;j3.add(wristRollHousing);
+// Roll indicator: small protrusion that visually shows Y-axis rotation
+const rollMark=bx(4,18,18,M.wrist);rollMark.position.set(0,12,11);j3.add(rollMark);
+
+// J[4] — wrist pitch. Pivot at top of roll housing.
+const j4=new THREE.Group();j4.position.y=26;j3.add(j4);J.push(j4);
+const j4Knuckle=sp(13,M.joint);j4.add(j4Knuckle);
+// Hand body
+const handBody=bx(28,38,22,M.hand);handBody.position.y=24;j4.add(handBody);
+
+// J[5] — gripper. We use a Group only so the index exists; aperture
+// is driven by direct finger position update in updateArm().
+const j5=new THREE.Group();j5.position.y=45;j4.add(j5);J.push(j5);
+// Knuckle at the wrist→hand interface
+const handCap=cy(15,12,6,M.wrist);handCap.position.y=-2;j5.add(handCap);
+// Two fingers extend along +Y; their Z offset is the aperture.
+const fR=bx(7,42,12,M.finger);fR.position.set(0,21,9);j5.add(fR);
+const fL=bx(7,42,12,M.finger);fL.position.set(0,21,-9);j5.add(fL);
+// Fingertip nubs to make grasping visible
+const ftR=bx(7,6,14,M.finger);ftR.position.set(0,42,9);j5.add(ftR);
+const ftL=bx(7,6,14,M.finger);ftL.position.set(0,42,-9);j5.add(ftL);
+
+/* ──────────────────────────────────────────────────────────────────────
+ * Orbit camera — spherical coordinates around the arm's mid-height.
+ * Left-drag rotates yaw/pitch; wheel zooms. The lookAt target is the
+ * approximate arm centroid so the user can spin around the joint
+ * column without losing it. */
+let cT=Math.PI*.85,cP=Math.PI*.32,cD=560,drag=false,lx=0,ly=0;
+const camTarget=new THREE.Vector3(0,150,0);
 cv.onmousedown=e=>{drag=true;lx=e.clientX;ly=e.clientY};
-onmouseup=()=>drag=false;
-onmousemove=e=>{if(!drag)return;cT-=(e.clientX-lx)*.005;cP=Math.max(.1,Math.min(1.5,cP-(e.clientY-ly)*.005));lx=e.clientX;ly=e.clientY};
-cv.onwheel=e=>{cD=Math.max(200,Math.min(1500,cD+e.deltaY*.5));e.preventDefault()};
+addEventListener('mouseup',()=>drag=false);
+addEventListener('mousemove',e=>{if(!drag)return;
+  cT-=(e.clientX-lx)*.008;
+  cP=Math.max(.15,Math.min(Math.PI*.49,cP-(e.clientY-ly)*.006));
+  lx=e.clientX;ly=e.clientY});
+cv.addEventListener('wheel',e=>{cD=Math.max(220,Math.min(1400,cD+e.deltaY*.55));e.preventDefault()},{passive:false});
 
 // State
 let su=[1500,1500,1500,1500,1500,1500],gs='—',co=0,st='—',
@@ -219,10 +267,21 @@ const enames=['Forearm','Biceps','Triceps','ch3','ch4','ch5','ch6','ch7'];
 for(let i=0;i<8;i++){ecE.innerHTML+=`<div class="emg-card"><div class="emg-idx">${i}</div><div class="emg-info"><div class="emg-name">${enames[i]}</div><div class="emg-bw"><div class="emg-bf" id="em${i}"></div></div><div class="emg-val" id="ev${i}">rms: 0.000</div></div></div>`}
 
 function updateArm(){
-J[0].rotation.y=p2a(SV[0],su[0]);J[1].rotation.z=-p2a(SV[1],su[1]);
-J[2].rotation.z=-p2a(SV[2],su[2]);J[3].rotation.z=-p2a(SV[3],su[3]);
-J[4].rotation.y=p2a(SV[4],su[4]);
-const g=p2a(SV[5],su[5])*.5;fR.position.z=12+g*15;fL.position.z=-12-g*15;
+  // J[0] base yaw  | J[1] shoulder pitch | J[2] elbow pitch
+  // J[3] wrist roll | J[4] wrist pitch
+  J[0].rotation.y =  p2a(SV[0],su[0]);
+  J[1].rotation.z = -p2a(SV[1],su[1]);
+  J[2].rotation.z = -p2a(SV[2],su[2]);
+  J[3].rotation.y =  p2a(SV[3],su[3]);
+  J[4].rotation.z = -p2a(SV[4],su[4]);
+  // Gripper aperture: -1 = fully open, +1 = closed. Mapped to finger
+  // separation: open => 14 apart, closed => 2 apart.
+  const ap = (su[5]-SV[5].mn)/(SV[5].mx-SV[5].mn); // 0..1
+  const sep = 2 + ap*12;
+  fR.position.z =  sep;
+  fL.position.z = -sep;
+  ftR.position.z =  sep;
+  ftL.position.z = -sep;
 }
 
 function ui(){
@@ -329,119 +388,14 @@ dOvf=d.diag.io_ring_overflows||0;dSafe=d.diag.io_safe_entries||0;dStall=d.diag.i
 }
 cn();
 
-// ============================================================================
-//  CONFIG PAGE — fetch /api/config (= gestures.json) and render categorized.
-// ============================================================================
-// Single fetch on page load, refresh button could be added later. The
-// endpoint is served by cpcu_ws.c and streams the live gestures.json from
-// /opt/cpcu/ (with config/ fallback), so a SIGHUP reload on the kernel
-// makes the next page-load show the new config.
-function escHtml(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-function cfgRow(k,v,cls){return `<div class="dg-row"><span class="k">${escHtml(k)}</span><span class="v ${cls||''}">${v}</span></div>`}
-
-function renderConfig(cfg){
-  // ---- Audio ----
-  const am = cfg.audio_mode || 'off';
-  const av = cfg.audio_volume_pct ?? 80;
-  document.getElementById('cfg-audio').innerHTML =
-      cfgRow('mode', am, am==='off'?'warn':'good')
-    + cfgRow('volume', av + ' %')
-    + cfgRow('schema version', 'v' + (cfg.schema_version || '?'));
-
-  // ---- Servos: sort by pca_ch so the table reads in physical order ----
-  const sc = cfg.servo_channels || {};
-  const servoRows = Object.entries(sc)
-    .sort((a,b)=>(a[1].pca_ch||0)-(b[1].pca_ch||0))
-    .map(([nm, sd]) => {
-      const range = sd.max_us - sd.min_us;
-      return cfgRow(
-        `PCA${sd.pca_ch}  ${nm}`,
-        `min=${sd.min_us}  max=${sd.max_us}  neutral=${sd.neutral_us}  (range ${range} us)`
-      );
-    }).join('');
-  document.getElementById('cfg-servos').innerHTML = servoRows
-    || cfgRow('—', 'no servos defined');
-
-  // ---- Gesture groups ----
-  // Each group renders its own block: EMG channels, model, confidence,
-  // hysteresis (with the new defaults made obvious), and per-gesture
-  // servo mapping table. The "snap" + grip_firm_us per gesture is
-  // surfaced explicitly since they only matter for the gripper close.
-  const gg = cfg.gesture_groups || {};
-  let html = '';
-  for (const [gname, grp] of Object.entries(gg)) {
-    if (gname.startsWith('_')) continue;
-    const ec = grp.emg_channels || {};
-    const names = ec.names || [];
-    const active = ec.active || [];
-    const chList = active.map((c,i)=>`ch${c}=${names[i]||'?'}`).join(', ');
-    const cc = grp.confidence || {};
-    const hy = grp.hysteresis || {};
-
-    html += `<div style="margin-top:10px;padding:8px;border:1px solid var(--bd);border-radius:4px">`;
-    html += `<div style="font-weight:bold;color:var(--ac);margin-bottom:6px">${escHtml(gname)}</div>`;
-    html += cfgRow('EMG channels', chList || '(none)');
-    html += cfgRow('model', grp.model_path || '(unset)');
-    html += cfgRow('confidence', `curve=${cc.curve||'?'}  floor=${cc.floor_pct||'?'}%  ceil=${cc.ceil_pct||'?'}%`);
-    html += cfgRow('hysteresis (votes)',
-      `r→a=${hy.rest_to_active??'?'}  ` +
-      `a→r=${hy.active_to_rest??'?'}${hy.active_to_rest===0?' (INSTANT)':''}  ` +
-      `a→a=${hy.active_to_active??'?'}`);
-
-    // Per-gesture mapping table
-    const gx = grp.gestures || {};
-    const gestureRows = Object.entries(gx)
-      .filter(([n,_])=>!n.startsWith('_'))
-      .map(([gn, gd]) => {
-        const mode = gd.mode || '?';
-        const ch = gd.channels || {};
-        const drives = Object.entries(ch).map(([sn, sd]) => {
-          const rate = sd.rate_us_s ?? 0;
-          const snap = sd.snap ? ' SNAP' : '';
-          const dir = rate > 0 ? '↑' : rate < 0 ? '↓' : '·';
-          return `${sn} ${dir}${Math.abs(rate)}${snap}`;
-        }).join(', ') || (mode==='freeze' ? '(freeze)' : '—');
-        const firm = gd.grip_firm_us ? ` firm=${gd.grip_firm_us}us` : '';
-        const audio = (gd.audio && gd.audio.freq_hz)
-          ? ` ♪${gd.audio.freq_hz}Hz/${gd.audio.freq_ms||0}ms` : '';
-        return cfgRow(`  ${gn} [${mode}]`, drives + firm + audio);
-      }).join('');
-    html += gestureRows;
-    html += `</div>`;
-  }
-  document.getElementById('cfg-groups').innerHTML = html
-    || cfgRow('—', 'no gesture groups defined');
-
-  // ---- Audio events ----
-  const ae = cfg.audio_events || {};
-  const evRows = Object.entries(ae)
-    .filter(([k,_])=>!k.startsWith('_'))
-    .sort((a,b)=>(a[1].priority||9)-(b[1].priority||9))
-    .map(([nm, ev]) => cfgRow(
-      `[P${ev.priority||'?'}] ${nm}`,
-      `${ev.voice||'(no voice)'}  ♪${ev.freq_hz||0}Hz/${ev.freq_ms||0}ms`
-    )).join('');
-  document.getElementById('cfg-events').innerHTML = evRows
-    || cfgRow('—', 'no audio events');
-
-  document.getElementById('cfg-status').textContent =
-    `loaded /api/config: ${Object.keys(gg).length} group(s), ${Object.keys(sc).length} servo(s)`;
-}
-
-fetch('/api/config')
-  .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP '+r.status)))
-  .then(renderConfig)
-  .catch(e => {
-    document.getElementById('cfg-status').textContent =
-      'failed to load /api/config: ' + e.message;
-  });
-
 function rz(){const w=cv.parentElement.clientWidth,h=cv.parentElement.clientHeight;R.setSize(w,h);cam.aspect=w/h;cam.updateProjectionMatrix()}
 onresize=rz;rz();
 
 let fc=0,ft=performance.now();
 function lp(){requestAnimationFrame(lp);
-const cy2=180;cam.position.set(Math.sin(cT)*Math.cos(cP)*cD,Math.sin(cP)*cD+cy2,Math.cos(cT)*Math.cos(cP)*cD);cam.lookAt(0,cy2,0);
+const cy2=160;
+cam.position.set(Math.sin(cT)*Math.cos(cP)*cD, Math.sin(cP)*cD+cy2, Math.cos(cT)*Math.cos(cP)*cD);
+cam.lookAt(camTarget.set(0,cy2,0));
 updateArm();ui();R.render(sc,cam);
 fc++;const n=performance.now();if(n-ft>1000){document.getElementById('fp').textContent=fc+' fps';fc=0;ft=n}}
 lp();
