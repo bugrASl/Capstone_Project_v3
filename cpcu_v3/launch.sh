@@ -317,6 +317,7 @@ except: sys.exit(0)
     # cpcu_io's I²C driver actually routes PWM to the right outputs.
     sync_servo_pca_ch_to_runtime
     publish_servo_names
+    publish_servo_pca_ch_digest
     publish_smoother_config
 }
 
@@ -372,6 +373,26 @@ with open("/tmp/cpcu_servo_names.txt", "w") as f:
 PYEOF
 }
 
+# Write /tmp/cpcu_servo_pca_ch.txt — one line per slot with the
+# physical PCA9685 channel pulled straight from gestures.json
+# (sorted by pca_ch ascending so line N is slot N). pca_testbench
+# reads this on startup and uses it as the AUTHORITATIVE map, no
+# matter what runtime.json says. Closes a foot-gun where stale
+# runtime.json + sync skips meant the testbench fell back to the
+# compile-time {0,1,11,8,5,4} map and only the BASE wire worked.
+publish_servo_pca_ch_digest() {
+    [ -f "${GS}" ] || return 0
+    python3 - "${GS}" << 'PYEOF' || warn "servo_pca_ch digest publish failed"
+import json, sys
+with open(sys.argv[1]) as f: gs = json.load(f)
+sc = sorted(gs.get("servo_channels", {}).items(),
+            key=lambda x: x[1].get("pca_ch", 0))
+with open("/tmp/cpcu_servo_pca_ch.txt", "w") as f:
+    for name, sd in sc[:6]:
+        f.write(f"{int(sd.get('pca_ch', 0))}\n")
+PYEOF
+}
+
 # Write /tmp/cpcu_smoother_config.txt — one line per logical slot with
 # the live smoother knobs (velocity / accel / deadband / bias) pulled
 # straight from runtime.json. The TUI's CONFIG page reads this file
@@ -415,6 +436,7 @@ preflight_pca()    {
     # That's why everything you press only moves Base.
     sync_servo_pca_ch_to_runtime
     publish_servo_names
+    publish_servo_pca_ch_digest   # /tmp digest — testbench's source of truth
     publish_smoother_config
     resolve_bin pca_testbench
 }

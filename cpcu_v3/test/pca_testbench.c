@@ -127,6 +127,31 @@ static void load_servo_names_from_tmp(void)
     fclose(f);
 }
 
+/* Override pca.servo_channel[] from /tmp/cpcu_servo_pca_ch.txt — one
+ * integer per line (0..15), written by launch.sh from gestures.json's
+ * pca_ch fields. AUTHORITATIVE: we apply this AFTER PCA_Init and
+ * AFTER any runtime.json load, so even a stale runtime.json can't
+ * drive the wrong PCA outputs. Returns the number of channels
+ * applied (0 if the file is missing / unreadable). */
+static int load_servo_pca_ch_from_tmp(PCA_Handle *p)
+{
+    FILE *f = fopen("/tmp/cpcu_servo_pca_ch.txt", "r");
+    if(!f) return 0;
+    int applied = 0;
+    char line[32];
+    while(applied < PCA_SERVO_COUNT && fgets(line, sizeof(line), f))
+    {
+        char *end = NULL;
+        long v = strtol(line, &end, 10);
+        if(end == line) continue;
+        if(v < 0 || v > 15) continue;
+        p->servo_channel[applied] = (uint8_t)v;
+        applied++;
+    }
+    fclose(f);
+    return applied;
+}
+
 /*============= GLOBALS ====================================================================*/
 
 static volatile sig_atomic_t g_run = 1;
@@ -1858,6 +1883,42 @@ int main(int argc, char *argv[])
         }
     }
 
+    /* AUTHORITATIVE channel map: /tmp/cpcu_servo_pca_ch.txt comes
+     * straight from gestures.json (which is what the operator edits).
+     * This overrides anything runtime.json + compile-time defaults
+     * said before. Closes the foot-gun where a stale runtime.json
+     * routed every PWM write to the wrong PCA9685 output and only
+     * Base happened to line up. */
+    {
+        int applied = load_servo_pca_ch_from_tmp(&pca);
+        if(applied == PCA_SERVO_COUNT)
+        {
+            fprintf(stderr,
+                "[TESTBENCH] PCA channel map from gestures.json digest: "
+                "S0=%u S1=%u S2=%u S3=%u S4=%u S5=%u\n",
+                pca.servo_channel[0], pca.servo_channel[1],
+                pca.servo_channel[2], pca.servo_channel[3],
+                pca.servo_channel[4], pca.servo_channel[5]);
+        }
+        else if(applied > 0)
+        {
+            fprintf(stderr,
+                "[TESTBENCH] partial channel digest (%d/%d); "
+                "remaining slots keep their current map\n",
+                applied, PCA_SERVO_COUNT);
+        }
+        else
+        {
+            fprintf(stderr,
+                "[TESTBENCH] /tmp/cpcu_servo_pca_ch.txt not found — "
+                "using runtime.json / compile-time map "
+                "(S0=%u S1=%u S2=%u S3=%u S4=%u S5=%u)\n",
+                pca.servo_channel[0], pca.servo_channel[1],
+                pca.servo_channel[2], pca.servo_channel[3],
+                pca.servo_channel[4], pca.servo_channel[5]);
+        }
+    }
+
     /* Start all servos at neutral */
     for(int i = 0; i < PCA_SERVO_COUNT; i++)
     {
@@ -2422,6 +2483,11 @@ int main(int argc, char *argv[])
                             saved_dead[i] = smooth_dead[i];
                         }
                         saved_valid = true;
+                        /* Re-apply gestures.json digest after the
+                         * runtime.json reload so the operator's
+                         * pca_ch edits via set-pca-channel take
+                         * effect immediately. */
+                        load_servo_pca_ch_from_tmp(&pca);
                         snprintf(status_line, sizeof(status_line),
                                  "Reloaded calibration from %s",
                                  cfg_path_used);
