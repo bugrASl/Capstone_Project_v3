@@ -28,6 +28,10 @@
 #include <unistd.h>
 #include <stdatomic.h>
 #include <time.h>
+#include <ifaddrs.h>
+#include <netdb.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 
 #ifdef CPCU_WS_HAVE_MONGOOSE
 #  include "mongoose.h"
@@ -660,9 +664,9 @@ int main(int argc, char **argv)
     parse_args(argc, argv);
 
     fprintf(stderr,
-        "===========================================================\n"
+        "════════════════════════════════════════════════════════════\n"
         "  CPCU Dashboard — WebSocket bridge (cpcu_ws v2.4.0)\n"
-        "===========================================================\n"
+        "════════════════════════════════════════════════════════════\n"
         "  bind     : %s\n"
         "  static   : %s\n",
         g_bind_url, g_static_dir);
@@ -674,7 +678,87 @@ int main(int argc, char **argv)
             "           Use --bind ws://127.0.0.1:8765 to restrict.\n");
     }
     fprintf(stderr,
-        "===========================================================\n");
+        "════════════════════════════════════════════════════════════\n"
+        "\n  Open in a browser on this Pi:\n"
+        "    http://localhost:8765\n"
+        "    http://127.0.0.1:8765\n\n");
+
+    /* Enumerate all bound IPv4 addresses and classify them so the
+     * operator knows which URL to share. 10.42.x is the default range
+     * for systemd-networkd / NetworkManager Internet-Sharing over USB
+     * — i.e. only the host PC can reach the Pi directly. Wi-Fi IPs
+     * (anything else routable) get listed under "Share with teammates". */
+    struct ifaddrs *ifa_head = NULL, *ifa = NULL;
+    int  has_wifi = 0, has_usb_tether = 0;
+    char wifi_buf[8][32] = {{0}}; int n_wifi = 0;
+    char usb_buf [4][32] = {{0}}; int n_usb  = 0;
+    if(getifaddrs(&ifa_head) == 0)
+    {
+        for(ifa = ifa_head; ifa != NULL; ifa = ifa->ifa_next)
+        {
+            if(!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+            char host[NI_MAXHOST];
+            if(getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in),
+                           host, sizeof(host), NULL, 0, NI_NUMERICHOST) != 0)
+                continue;
+            /* Skip loopback, link-local, IPv6, private spaces we ignore */
+            if(!strncmp(host, "127.", 4))         continue;
+            if(!strncmp(host, "169.254.", 8))     continue;
+            if(!strncmp(host, "172.16.", 7))      continue;
+            if(!strncmp(host, "172.17.", 7))      continue;
+            if(!strncmp(host, "172.18.", 7))      continue;
+            if(!strncmp(host, "172.19.", 7))      continue;
+            if(!strncmp(host, "172.2",   5))      continue;
+            if(!strncmp(host, "172.30.", 7))      continue;
+            if(!strncmp(host, "172.31.", 7))      continue;
+
+            if(!strncmp(host, "10.42.", 6))
+            {
+                if(n_usb < 4) snprintf(usb_buf[n_usb++], 32, "%s", host);
+                has_usb_tether = 1;
+            }
+            else
+            {
+                if(n_wifi < 8) snprintf(wifi_buf[n_wifi++], 32, "%s", host);
+                has_wifi = 1;
+            }
+        }
+        freeifaddrs(ifa_head);
+    }
+
+    if(has_usb_tether)
+    {
+        fprintf(stderr, "  USB-tether link (host PC only):\n");
+        for(int i = 0; i < n_usb; i++)
+            fprintf(stderr, "    http://%s:8765   (only the host PC can reach this)\n",
+                    usb_buf[i]);
+        fprintf(stderr, "\n");
+    }
+    if(has_wifi)
+    {
+        fprintf(stderr, "  Share with teammates on the same Wi-Fi:\n");
+        for(int i = 0; i < n_wifi; i++)
+            fprintf(stderr, "    http://%s:8765\n", wifi_buf[i]);
+        fprintf(stderr, "\n");
+    }
+    char hn[256] = {0};
+    if(gethostname(hn, sizeof(hn) - 1) == 0 && hn[0])
+        fprintf(stderr, "  mDNS / Bonjour:  http://%s.local:8765\n\n", hn);
+    if(!has_wifi && has_usb_tether)
+    {
+        fprintf(stderr,
+            "  Pi has no Wi-Fi — phones cannot reach it directly.\n"
+            "  Run this on the HOST PC to forward Pi:8765 to host LAN:\n"
+            "      socat TCP-LISTEN:8765,fork,reuseaddr TCP:%s:8765\n"
+            "  ...then phones browse http://<host_wlan_ip>:8765\n\n",
+            n_usb > 0 ? usb_buf[0] : "<pi_ip>");
+    }
+    fprintf(stderr,
+        "  Endpoints:\n"
+        "    /              main dashboard\n"
+        "    /api/config    current gestures.json (categorized)\n"
+        "    /ws            WebSocket stream (live data)\n"
+        "════════════════════════════════════════════════════════════\n\n");
 
     signal(SIGINT,  on_sig);
     signal(SIGTERM, on_sig);
