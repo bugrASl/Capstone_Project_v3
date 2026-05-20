@@ -1615,38 +1615,97 @@ void draw_page_dsp(int r, IPC_Context *ipc)
         }
 
         draw_hline(r - 1, 0, g_tui_w);
-        draw_section(r, 1, "CLASS CONFIDENCE (% softmax probability)");
+        draw_section(r, 1, "CLASS CONFIDENCE (% softmax probability, per group)");
         draw_section(r, g_col_r, "FILTERED RMS (bar=% of 0.5V, +abs V)");
         r++;
 
-        uint8_t nc = ipc->dsp_export->num_classes;
-        if(nc > IPC_MAX_CLASSES) nc = IPC_MAX_CLASSES;
-
-        int max_rows = (nc > WL_NUM_CHANNELS) ? nc : WL_NUM_CHANNELS;
-
-        for(int i = 0; i < max_rows; i++)
+        /* Per-group class panel. Pulled from /tmp/cpcu_group_state.txt
+         * (same source the DSP/AI page's ACTIVE GESTURE PER GROUP
+         * section uses). Each group occupies a small block:
+         *     [group_name]
+         *       cls0 ▓▓▓▓░░ 67%
+         *       cls1 ▓░░░░░ 8%
+         *       ...
+         * Active class (matches the group's current state) is drawn in
+         * magenta; others use the standard bar color. We render this
+         * column independently of the RMS column so they stack
+         * vertically without overlapping; max_rows is chosen so the
+         * page doesn't overflow. */
+        int class_row = r;
+        FILE *gf_cc = fopen("/tmp/cpcu_group_state.txt", "r");
+        if(gf_cc)
         {
-            if(i < (int)nc)
+            char line[512];
+            while(class_row < g_term_h - 8 &&
+                  fgets(line, sizeof(line), gf_cc))
             {
-                float conf = ipc->dsp_export->class_confidence[i];
-                if(conf < 0.0f) conf = 0.0f;
-                if(conf > 1.0f) conf = 1.0f;
-                mvprintw(r + i, 1, "%-6s", CLS_NAMES[i]);
-                draw_bar(r + i, 8, 14, conf,
-                         i == active ? CP_MAGENTA : CP_BAR_FILL, CP_BAR_EMPTY);
-            }
+                /* parse name\tstate\tconf\tclasses */
+                char *p_name = line;
+                char *tab1 = strchr(p_name, '\t'); if(!tab1) continue; *tab1++ = '\0';
+                char *p_state = tab1;
+                char *tab2 = strchr(p_state, '\t'); if(!tab2) continue; *tab2++ = '\0';
+                char *tab3 = strchr(tab2, '\t');    if(!tab3) continue; *tab3++ = '\0';
+                char *p_cls = tab3;
+                size_t L = strlen(p_cls);
+                while(L > 0 && (p_cls[L-1] == '\n' || p_cls[L-1] == '\r'))
+                    p_cls[--L] = '\0';
 
-            if(i < WL_NUM_CHANNELS)
-            {
-                float rv = ipc->dsp_export->channel_rms[i];
-                float fr = rv / 0.5f;
-                if(fr > 1.0f) fr = 1.0f;
-                mvprintw(r + i, g_col_r, "ch%d ", i);
-                draw_bar(r + i, g_col_r + 4, 14, fr, CP_CYAN, CP_BAR_EMPTY);
-                printw(" %.3f V", rv);
+                /* Group header */
+                attron(COLOR_PAIR(CP_CYAN) | A_BOLD);
+                mvprintw(class_row, 1, "[%s]", p_name);
+                attroff(COLOR_PAIR(CP_CYAN) | A_BOLD);
+                class_row++;
+
+                /* Walk "cls0:p0,cls1:p1,..." */
+                char *tok = p_cls;
+                while(tok && *tok && class_row < g_term_h - 8)
+                {
+                    char *next = strchr(tok, ',');
+                    if(next) { *next = '\0'; next++; }
+                    char *colon = strchr(tok, ':');
+                    if(colon)
+                    {
+                        *colon = '\0';
+                        int pct = atoi(colon + 1);
+                        if(pct < 0) pct = 0;
+                        if(pct > 100) pct = 100;
+                        int is_active = (strcmp(tok, p_state) == 0);
+                        mvprintw(class_row, 3, "%-6.6s", tok);
+                        draw_bar(class_row, 10, 14, pct / 100.0f,
+                                 is_active ? CP_MAGENTA : CP_BAR_FILL,
+                                 CP_BAR_EMPTY);
+                        mvprintw(class_row, 26, "%3d%%", pct);
+                    }
+                    tok = next;
+                    class_row++;
+                }
+                class_row++;   /* blank line between groups */
             }
+            fclose(gf_cc);
         }
-        r += max_rows + 1;
+        else
+        {
+            attron(COLOR_PAIR(CP_DIM));
+            mvprintw(class_row, 1, "(no group digest yet — waiting for first window)");
+            attroff(COLOR_PAIR(CP_DIM));
+            class_row++;
+        }
+
+        /* RMS column (right side) — still IPC-direct (no per-group RMS) */
+        for(int i = 0; i < WL_NUM_CHANNELS; i++)
+        {
+            float rv = ipc->dsp_export->channel_rms[i];
+            float fr = rv / 0.5f;
+            if(fr > 1.0f) fr = 1.0f;
+            mvprintw(r + i, g_col_r, "ch%d ", i);
+            draw_bar(r + i, g_col_r + 4, 14, fr, CP_CYAN, CP_BAR_EMPTY);
+            printw(" %.3f V", rv);
+        }
+
+        /* Advance r by the taller of the two columns so SERVO OUTPUT
+         * doesn't overlap whatever's still on screen above. */
+        int rms_end = r + WL_NUM_CHANNELS;
+        r = (class_row > rms_end ? class_row : rms_end) + 1;
     }
     else
     {
