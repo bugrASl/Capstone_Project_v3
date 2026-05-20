@@ -92,7 +92,20 @@ NUM_EMG_CH      = 8
 SERVO_NEUTRAL   = 1500
 DRAIN_PERIOD_S  = 0.010                             # main loop period (was 0.020)
 DRAIN_BATCH     = 512                               # max packets per drain (was 200)
-PROB_THRESH     = 0.65                              # min SVM prob to consider
+"""
+PROB_THRESH gates which model predictions are even ALLOWED to count
+toward the hysteresis vote. A value of 0.65 was too high for the
+current 4-class model: predictions routinely hover at 30-50%
+confidence (especially when the operator's electrodes aren't on
+the exact training-time positions), and every below-threshold vote
+was silently dropped — making the system feel unresponsive even
+though the model was producing reasonable outputs.
+
+Default 0.40 means: as long as the winning class is at least 1.6×
+random (25% for 4 classes), the vote counts. Override via env:
+    CPCU_PROB_THRESH=0.30 ./launch.sh tui
+"""
+PROB_THRESH     = float(os.environ.get("CPCU_PROB_THRESH", "0.40"))
 
 # Default servo limit arrays — overwritten by load_gestures()
 SERVO_MIN_US    = [498, 1074, 1074, 1001, 1001,  976]
