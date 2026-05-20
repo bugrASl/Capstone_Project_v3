@@ -25,6 +25,8 @@ import argparse
 import glob
 import json
 import os
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import re
 import signal
 import sys
@@ -61,7 +63,15 @@ WINDOW_MS       = 200
 # Cortex-A76, so a stride < (groups × pred_ms) backs up the IPC ring.
 # 200 ms gives ≥80 ms headroom for two-group inference; reduces
 # command rate to 5 Hz, well above human reaction time (~250 ms).
-STRIDE_MS       = 200
+# STRIDE_MS controls the inference rate. With parallel two-group
+# inference (see ThreadPoolExecutor below) the per-stride cost is the
+# MAX of group inference times, not the sum — so 100 ms gives a 40 ms
+# safety margin on top of a 50–60 ms sklearn predict_proba. If the
+# operator sets CPCU_DSP_SERIAL=1 the inference becomes sequential
+# (~114 ms) and STRIDE_MS=100 will back the ring up — bump to 200 in
+# that case (this constant is read once at startup; restart the DSP
+# to change it).
+STRIDE_MS       = 100
 WINDOW_HI       = INPUT_FS_HZ  * WINDOW_MS // 1000  # 200 samples @ 1 kHz
 STRIDE_HI       = INPUT_FS_HZ  * STRIDE_MS // 1000  # 200 samples @ 1 kHz
 WINDOW_LO       = TARGET_FS_HZ * WINDOW_MS // 1000  # 40  samples @ 200 Hz
@@ -1249,6 +1259,27 @@ def run_inference(verbose=False, operator="default"):
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT,  _stop)
 
+    # Parallel inference executor. Each gesture group is fully
+    # independent — disjoint EMG channels, separate model/scaler,
+    # separate hysteresis state — so two-group inference can run on
+    # two threads. sklearn's predict_proba releases the GIL during the
+    # heavy numpy work, so threading actually helps (not just an
+    # illusion of speedup). One worker per group, executor lives for
+    # the lifetime of the process to avoid per-iteration thread
+    # spawn cost. Set CPCU_DSP_SERIAL=1 to disable and fall back to
+    # sequential — useful when debugging or on single-core hardware.
+    use_parallel = (len(group_states) > 1
+                    and os.environ.get("CPCU_DSP_SERIAL", "0") != "1")
+    pool = (ThreadPoolExecutor(max_workers=len(group_states),
+                                thread_name_prefix="dsp_grp")
+            if use_parallel else None)
+    if pool:
+        print(f"[DSP] parallel inference: {len(group_states)} workers",
+              flush=True)
+    else:
+        print("[DSP] sequential inference (single group or CPCU_DSP_SERIAL=1)",
+              flush=True)
+
     while running[0]:
         t0 = time.monotonic()
 
@@ -1264,12 +1295,27 @@ def run_inference(verbose=False, operator="default"):
             samples_since_window = 0
             t_dsp_start          = time.monotonic()
 
-            # 3. per-group features + inference + hysteresis
+            # 3. per-group features + inference + hysteresis. Runs in
+            # parallel when the executor is available; sequential
+            # fallback when there's only one group or the operator
+            # opted out. We always wait for ALL groups to finish before
+            # publishing — the IPC export and motor command depend on
+            # every group's state being current.
             rms_8ch = [0.0] * NUM_EMG_CH
-            for gi, gst in enumerate(group_states):
-                _features_and_inference(gst, rms_8ch, ipc)
-                if gi == 0:
-                    _publish_primary_state(ipc, gst)
+            if pool is not None:
+                futs = [pool.submit(_features_and_inference, gst, rms_8ch, ipc)
+                        for gst in group_states]
+                # block here — total wait ≈ max(group_inference_times)
+                # rather than the sequential sum
+                for f in futs:
+                    f.result()
+            else:
+                for gst in group_states:
+                    _features_and_inference(gst, rms_8ch, ipc)
+            # Primary state publish (group 0 is the primary). Done
+            # AFTER both groups finish so the IPC export reflects a
+            # consistent snapshot.
+            _publish_primary_state(ipc, group_states[0])
 
             # Publish per-group state for the TUI's DSP/AI page. The
             # IPC export only carries one group's prediction (the
@@ -1354,6 +1400,11 @@ def run_inference(verbose=False, operator="default"):
             time.sleep(DRAIN_PERIOD_S - elapsed)
 
     print("[DSP] shutdown", flush=True)
+    if pool is not None:
+        # Drain in-flight futures + release worker threads cleanly.
+        # cancel_futures requires Python 3.9+; the project targets the
+        # Pi's bundled 3.11 so no compat guard needed.
+        pool.shutdown(wait=True, cancel_futures=True)
     ipc.close()
     return 0
 
