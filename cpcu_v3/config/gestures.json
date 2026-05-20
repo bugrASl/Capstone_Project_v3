@@ -49,9 +49,9 @@
                     2
                 ],
                 "names": [
-                    "Hand_R",
-                    "Biceps_R",
-                    "Triceps_R"
+                    "R_Hand",
+                    "R_Biceps",
+                    "R_Triceps"
                 ]
             },
             "model_path": "models/arm.pkl",
@@ -124,9 +124,9 @@
                     5
                 ],
                 "names": [
-                    "Hand_L",
-                    "Biceps_L",
-                    "Triceps_L"
+                    "L_Hand",
+                    "L_Biceps",
+                    "L_Triceps"
                 ]
             },
             "model_path": "models/arm.pkl",

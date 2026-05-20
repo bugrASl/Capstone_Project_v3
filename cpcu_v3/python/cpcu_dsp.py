@@ -1007,13 +1007,17 @@ def _integrate_velocity(group_states, current_target, dt,
     (rate == 0 in its current gesture) get no contribution from that group.
 
     Special cases:
-      * ALL groups at rest  → snap to neutral (no integration)
+      * ALL groups at rest  → HOLD the last commanded position (no
+        integration, no snap). This mirrors a real prosthetic: when
+        the operator stops contracting, the arm stays where it is.
+        Use SAFE state (radio lost, vbat critical, etc.) to force a
+        neutral snap — see _handle_safe_state.
       * gesture mode "freeze" → that group contributes nothing
       * gripper (servo index 5) — clamp from below by the gesture's
         ``_grip_firm`` value so it never goes slack mid-grasp.
     """
     if all(gst.current_state == "rest" for gst in group_states):
-        return [SERVO_NEUTRAL] * NUM_SERVOS
+        return current_target          # hold pose, don't snap
 
     for gst in group_states:
         gdef = gst.gestures.get(gst.current_state)
