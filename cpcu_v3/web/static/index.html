@@ -295,7 +295,9 @@ const slE=document.getElementById('sl');
 SV.forEach((s,i)=>{slE.innerHTML+=`<div class="sr"><span class="sn">${s.n}</span><div class="sw"><div class="sf" id="b${i}"></div></div><span class="sv" id="v${i}">1500</span></div>`});
 
 const clE=document.getElementById('cl');
-GNAMES.forEach((g,i)=>{clE.innerHTML+=`<div class="cr"><span class="cn">${g}</span><div class="cw"><div class="cfl" id="cc${i}" style="background:${GCOL[i%GCOL.length]}"></div></div><span class="cv2" id="cv${i}">0%</span></div>`});
+// Per-group class panel is rendered dynamically in ui() from the
+// `groups[]` WS payload — see renderClassPanel(). Static HTML left
+// empty; first WS update populates it.
 
 // Build EMG page
 const ecE=document.getElementById('emg-cards');
@@ -325,6 +327,8 @@ document.getElementById('gl').textContent=gs;
 document.getElementById('ct').textContent=`confidence: ${(co*100)|0}%`;
 const cb=document.getElementById('cb');cb.style.width=(co*100)+'%';
 cb.style.background=co>.7?'var(--g)':co>.4?'var(--am)':'var(--r)';
+
+renderClassPanel();
 
 // Per-group panel — one card per gesture_group (right_arm, left_arm, …).
 // Each card shows current state, conf %, and top classes (sorted desc).
@@ -359,12 +363,36 @@ SV.forEach((s,i)=>{
   document.getElementById('v'+i).textContent=su[i];
 });
 
-for(let i=0;i<Math.min(nc,GNAMES.length);i++){
-  const pct=Math.max(0,Math.min(100,(cc[i]||0)*100));
-  document.getElementById('cc'+i).style.width=pct+'%';
-  document.getElementById('cv'+i).textContent=pct.toFixed(0)+'%';
+// Per-group class confidence panel. Renders each gesture_group as a
+// small section with its own classes + bars. Falls back to the legacy
+// flat view if `groups[]` payload isn't available yet.
+const _classColors = ['var(--a)','var(--g)','var(--am)','var(--p)','var(--fg2)'];
+function renderClassPanel(){
+  if(groups.length){
+    let html='';
+    for(let gi=0; gi<groups.length; gi++){
+      const g = groups[gi];
+      html += `<div style="margin-bottom:10px">
+        <div style="font-size:11px;color:var(--a);text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px">[${g.name}]</div>`;
+      const entries = Object.entries(g.classes||{}).sort((a,b)=>b[1]-a[1]);
+      for(let i=0; i<entries.length; i++){
+        const [name, pct] = entries[i];
+        const col = _classColors[i % _classColors.length];
+        // active class (matches g.state) gets full-opacity color; others fade
+        const isActive = name === g.state;
+        html += `<div class="cr">
+          <span class="cn" style="${isActive?'font-weight:700':''}">${name}</span>
+          <div class="cw"><div class="cfl" style="width:${pct}%;background:${col};${isActive?'':'opacity:.55'}"></div></div>
+          <span class="cv2">${pct}%</span>
+        </div>`;
+      }
+      html += `</div>`;
+    }
+    clE.innerHTML = html;
+  } else if(!clE.innerHTML){
+    clE.innerHTML = '<div style="color:var(--fg2);font-size:12px">waiting for DSP…</div>';
+  }
 }
-
 // hysteresis
 const hf=document.getElementById('hf');
 const pct=hNeeded>0?(hConsec/hNeeded)*100:0;
