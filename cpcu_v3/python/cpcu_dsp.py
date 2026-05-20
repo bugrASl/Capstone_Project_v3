@@ -1448,8 +1448,27 @@ def run_inference(verbose=False, operator="default"):
 
 def run_calibrate(seconds):
     """Record ``seconds`` of rest-state EMG, compute 3·std per channel,
-    save to models/noise_thresholds.json. Used by ``./launch.sh calibrate
-    --rest-only``."""
+    save to ``models/noise_thresholds.json``.
+
+    ⚠ DIAGNOSTIC ONLY — this file is NOT read by the runtime DSP.
+    Your trained model already has rest-state characteristics baked in
+    from the AI team's ``proccess.py`` pipeline (see
+    ``dynamic_noise_thresholds.json`` generated at training time).
+    Running this calibration produces a SECOND file with potentially
+    different values that no code path consumes — keeping it around
+    just confuses future operators.
+
+    The function still works because it's useful for one purpose:
+    sanity-checking your electrode setup. If ``thr`` values come back
+    > 100, your contact is noisy and you should fix that before
+    running ``./launch.sh tui`` for real."""
+    print("[CAL] ⚠ This calibration is DIAGNOSTIC ONLY.", flush=True)
+    print("[CAL]   Output is NOT consumed by the runtime DSP.",  flush=True)
+    print("[CAL]   Use it to check electrode contact quality.",  flush=True)
+    print("[CAL]   Values >100 = noisy contact; reseat electrodes.", flush=True)
+    print("[CAL]   To delete the stale file: rm models/noise_thresholds.json",
+          flush=True)
+    print("",     flush=True)
     groups, _ = load_gestures()
     active_channels = groups[0]["emg_channels"] if groups else [0, 1, 2]
     num_ch          = len(active_channels)
