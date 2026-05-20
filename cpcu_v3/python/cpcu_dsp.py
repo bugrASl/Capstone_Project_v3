@@ -69,6 +69,14 @@ BUFFER_SIZE     = WINDOW_HI * 8                     # 1600-sample ring (more sla
 
 # Hardware constants (matched to BSAU + cpcu_io)
 ADC_MIDRAIL     = 2048
+# Spike-filter constants — mirrored from predictX.py. ADC samples
+# outside this range or differing from the previous valid sample by
+# more than ADC_MAX_DELTA are treated as wireless-link garbage and
+# replaced with the last good value. Keeps the feature vector clean
+# so the trained model sees the same kind of signal it learned on.
+ADC_MIN_VALID   = 10
+ADC_MAX_VALID   = 4095
+ADC_MAX_DELTA   = 1300
 NUM_SERVOS      = 6
 NUM_EMG_CH      = 8
 SERVO_NEUTRAL   = 1500
@@ -698,18 +706,29 @@ def _uart_stream_samples(samples_batch):
         pass
 
 
-def _uart_send_prediction(group_name, gesture, conf):
-    """Emit a one-line prediction summary for monitor.py's debug overlay.
+def _uart_send_prediction(group_name, gesture, conf, classes=None, probs=None):
+    """Emit a prediction summary for monitor.py's overlay, equivalent
+    to what predictX.py prints. Format:
 
-    Format: ``#pred,<ts_ms>,<group>,<gesture>,<conf>\\n``. The leading
-    ``#`` makes monitor.py's CSV parser skip it (it's not 6 ints), so
-    the prediction line is purely informational — the host re-runs
-    inference locally on the raw stream for ground-truth comparison."""
+        #pred,<ts_ms>,<group>,<top_gesture>,<top_conf>,cls0:p0,cls1:p1,...
+
+    The leading ``#`` makes monitor.py's CSV parser skip it (it's not
+    6 ints), so the host can either:
+      * ignore prediction lines and re-run inference locally
+      * parse them as a debug overlay showing what the Pi predicted
+    `classes` is the list of class names (model.classes_) and `probs`
+    is the corresponding softmax vector. Both optional; if absent we
+    fall back to the old two-field format."""
     if _uart is None:
         return
     try:
         ts = int(time.time() * 1000)
-        _uart.write(f"#pred,{ts},{group_name},{gesture},{conf:.3f}\n".encode())
+        line = f"#pred,{ts},{group_name},{gesture},{conf:.3f}"
+        if classes is not None and probs is not None:
+            tail = ",".join(f"{c}:{float(p):.3f}"
+                            for c, p in zip(classes, probs))
+            line = f"{line},{tail}"
+        _uart.write((line + "\n").encode())
     except Exception:
         pass
 
@@ -775,6 +794,9 @@ class GroupState:
         # rolling buffers — one deque per active EMG channel
         self.buffers      = [deque([0]*BUFFER_SIZE, maxlen=BUFFER_SIZE)
                              for _ in self.emg_channels]
+        # last accepted raw sample per channel — used by ingest_sample's
+        # spike validator to substitute for out-of-range / Δ>MAX values
+        self._last_raw    = [ADC_MIDRAIL] * len(self.emg_channels)
 
         # ML model — populated by attach_model()
         self.model        = None
@@ -808,9 +830,22 @@ class GroupState:
             print(f"[DSP] {self.name}: classes={classes}", flush=True)
 
     def ingest_sample(self, ei, si, samples):
-        """Append one BSAU sample-pair entry into the per-channel deques."""
+        """Append one BSAU sample-pair into the per-channel deques.
+        Mirrors predictX.py's validate_sample: drops impossibly fast
+        sample-to-sample deltas (wireless dropouts that decode to
+        garbage ADC values otherwise pollute the feature vector and
+        bias the classifier toward whichever class was most common in
+        training). The threshold MAX_DELTA=1300 matches what the
+        operator used to train the model — keep them in lockstep."""
         for bi, ch in enumerate(self.emg_channels):
-            self.buffers[bi].append(int(samples[ei, si, ch]) - ADC_MIDRAIL)
+            raw = int(samples[ei, si, ch])
+            # 12-bit ADC; reject out-of-range (0 = no signal, 4095 = clip)
+            if raw < ADC_MIN_VALID or raw > ADC_MAX_VALID:
+                raw = self._last_raw[bi]
+            elif abs(raw - self._last_raw[bi]) > ADC_MAX_DELTA:
+                raw = self._last_raw[bi]
+            self._last_raw[bi] = raw
+            self.buffers[bi].append(raw - ADC_MIDRAIL)
 
     def reset_to_rest(self):
         """Force the group back to its rest state (used in SAFE / edit mode)."""
@@ -828,7 +863,13 @@ def _apply_velocity_overrides(group_states, vel_overrides, servo_channels):
     calibrate."""
     if not vel_overrides:
         return
-    name_to_idx = {n: d["pca_ch"] for n, d in servo_channels.items()}
+    # name → slot index (sorted by pca_ch ascending) — same scheme as
+    # load_gestures. Without this fix the override used the raw pca_ch
+    # value as an array index, which crashes / writes the wrong slot
+    # whenever the operator wires servos to non-default channels.
+    sorted_servos = sorted(servo_channels.items(),
+                           key=lambda x: x[1].get("pca_ch", 0))
+    name_to_idx = {n: slot for slot, (n, _d) in enumerate(sorted_servos)}
     for gst in group_states:
         for gname, overrides in vel_overrides.items():
             if gname not in gst.gestures:
@@ -1231,10 +1272,20 @@ def run_inference(verbose=False, operator="default"):
             # primary), so we drop a tiny /tmp file with all of them.
             write_group_state_digest(group_states)
 
+            # UART prediction lines — one per group, with the full class
+            # probability vector. This mirrors what predictX.py prints
+            # to the host so the AI team can A/B compare on-Pi inference
+            # against their host-side classifier without leaving the
+            # CSV stream behind.
+            for gst in group_states:
+                classes = (list(gst.model.classes_)
+                           if gst.model is not None else None)
+                _uart_send_prediction(gst.name,
+                                      gst.current_state,
+                                      gst.conf_pct / 100.0,
+                                      classes=classes,
+                                      probs=gst.class_conf or None)
             primary = group_states[0]
-            _uart_send_prediction(primary.name,
-                                  primary.current_state,
-                                  primary.conf_pct / 100.0)
 
             # 4. publish DSP export
             t_dsp_s = time.monotonic() - t_dsp_start

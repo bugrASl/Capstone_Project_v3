@@ -20,7 +20,11 @@ Usage:
 
 The stream multiplexes:
     CSV ints:    "ch0,ch1,ch2,ch3,ch4,ch5\\n"   (2 kHz, raw samples)
-    Prediction:  "#pred,ts_ms,group,gesture,conf\\n" (~5 Hz, comment)
+    Prediction:  "#pred,ts_ms,group,gesture,conf,cls0:p0,cls1:p1,...\\n"
+                 (~5 Hz, per group, comment-prefixed so the CSV
+                 parser skips it. The optional class:prob tail gives
+                 the full softmax vector — same data predictX.py
+                 plotted from local inference.)
 
 Lines starting with '#' are skipped by the CSV parser, so the
 prediction line is purely informational — this script re-runs
@@ -186,6 +190,14 @@ state_text = ax_state.text(0.5, 0.82, "WAITING...", ha="center", va="center",
 conf_text  = ax_state.text(0.5, 0.66, "Confidence: --", ha="center",
     va="center", fontsize=14, transform=ax_state.transAxes)
 
+# Pi-side prediction overlay — shows what cpcu_dsp.py on the Pi
+# predicted (across all groups), updated from "#pred,..." UART
+# comment lines. Lets the AI team A/B compare local-vs-Pi inference
+# without leaving the same CSV stream.
+pi_text = ax_state.text(0.5, 0.58, "Pi: —", ha="center", va="center",
+    fontsize=10, color="#555555", transform=ax_state.transAxes,
+    family="monospace")
+
 bar_axes = []
 for i, cls in enumerate(CLASSES):
     y = 0.50 - i*0.12
@@ -206,6 +218,36 @@ new_samples       = 0
 pred_history      = deque(maxlen=3)
 stable_prediction = "WAITING..."
 
+# Per-group Pi-side predictions parsed from "#pred,..." UART lines.
+# Shape: {group_name: {"gesture": str, "conf": float, "classes": {name: prob}}}
+# Refreshed every time a new "#pred,..." line arrives (~5 Hz per group).
+pi_predictions = {}
+
+def _parse_pred_line(line):
+    """Parse a "#pred,ts,group,gesture,conf,cls:p,cls:p,..." line into
+    the pi_predictions dict. Silently drops malformed lines."""
+    try:
+        parts = line[len("#pred,"):].split(",")
+        if len(parts) < 4:
+            return
+        _ts, group, gesture, conf = parts[0], parts[1], parts[2], parts[3]
+        entry = {
+            "gesture": gesture,
+            "conf":    float(conf),
+            "classes": {},
+        }
+        for tail in parts[4:]:
+            if ":" not in tail:
+                continue
+            cname, cprob = tail.split(":", 1)
+            try:
+                entry["classes"][cname] = float(cprob)
+            except ValueError:
+                pass
+        pi_predictions[group] = entry
+    except Exception:
+        pass
+
 
 def update(_frame):
     """Drain serial, plot, predict, and update widgets."""
@@ -213,7 +255,12 @@ def update(_frame):
     try:
         while ser.in_waiting > 0:
             line = ser.readline().decode("utf-8", errors="ignore").strip()
-            if not line or line.startswith("#"):     # skip "#pred,..." lines
+            if not line:
+                continue
+            if line.startswith("#pred,"):
+                _parse_pred_line(line)
+                continue
+            if line.startswith("#"):                 # other comment lines
                 continue
             parts = line.split(",")
             if len(parts) < CHANNELS_STREAMED:
@@ -260,6 +307,18 @@ def update(_frame):
             state_text.set_bbox(dict(facecolor=bg, edgecolor="black",
                                      boxstyle="round,pad=0.5"))
             conf_text.set_text(f"Confidence: {conf:.1%}")
+
+        # Update Pi-prediction overlay (independent of host inference rate)
+        if pi_predictions:
+            lines_pi = []
+            for grp, p in pi_predictions.items():
+                cls_str = " ".join(f"{c}:{int(v*100)}"
+                                   for c, v in p["classes"].items())
+                lines_pi.append(f"{grp}: {p['gesture']} {int(p['conf']*100)}%"
+                                + (f"  [{cls_str}]" if cls_str else ""))
+            pi_text.set_text("Pi → " + "  ".join(lines_pi))
+        else:
+            pi_text.set_text("Pi: (no #pred lines received yet)")
             for i, cls in enumerate(CLASSES):
                 bar_axes[i].set_width(0.90 * probs[i])
                 bar_axes[i].set_facecolor(
