@@ -317,6 +317,7 @@ except: sys.exit(0)
     # cpcu_io's I²C driver actually routes PWM to the right outputs.
     sync_servo_pca_ch_to_runtime
     publish_servo_names
+    publish_smoother_config
 }
 
 # Pull pca_ch values out of gestures.json (sorted by pca_ch ascending)
@@ -368,6 +369,40 @@ sc = sorted(gs.get("servo_channels", {}).items(),
 with open("/tmp/cpcu_servo_names.txt", "w") as f:
     for name, _sd in sc[:6]:
         f.write(name + "\n")
+PYEOF
+}
+
+# Write /tmp/cpcu_smoother_config.txt — one line per logical slot with
+# the live smoother knobs (velocity / accel / deadband / bias) pulled
+# straight from runtime.json. The TUI's CONFIG page reads this file
+# every draw so the operator can see the same per-servo motion profile
+# values that cpcu_io is using, without having to grep the JSON.
+#
+# Line format (tab-separated, six lines for the six servo slots):
+#     <name>\t<vel_us_s>\t<accel_us_s2>\t<deadband_us>\t<bias_us>
+publish_smoother_config() {
+    local rt="${CPCU_ROOT}/config/runtime.json"
+    [ -f "${rt}" ] || return 0
+    [ -f "${GS}" ] || return 0
+    python3 - "${rt}" "${GS}" << 'PYEOF' || warn "smoother-config publish failed"
+import json, sys
+rt_path, gs_path = sys.argv[1], sys.argv[2]
+with open(rt_path) as f: rt = json.load(f)
+with open(gs_path) as f: gs = json.load(f)
+# Name order matches publish_servo_names (sorted by pca_ch).
+sc = sorted(gs.get("servo_channels", {}).items(),
+            key=lambda x: x[1].get("pca_ch", 0))
+names = [n for n, _ in sc[:6]]
+vel  = rt.get("smooth_velocity",  [0]*6)
+acc  = rt.get("smooth_accel",     [0]*6)
+db   = rt.get("smooth_deadband",  [0]*6)
+bias = rt.get("servo_bias_us",    [0]*6)
+def pad(a):
+    return (list(a) + [0]*6)[:6]
+vel, acc, db, bias = pad(vel), pad(acc), pad(db), pad(bias)
+with open("/tmp/cpcu_smoother_config.txt", "w") as f:
+    for i, name in enumerate(names):
+        f.write(f"{name}\t{vel[i]}\t{acc[i]}\t{db[i]}\t{bias[i]}\n")
 PYEOF
 }
 

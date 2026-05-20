@@ -2524,6 +2524,82 @@ void draw_page_config(int r, IPC_Context *ipc)
 
     draw_hline(r - 1, 0, g_tui_w);
 
+    /*==================== SMOOTHER CONFIG (per-servo) ====================
+     * launch.sh's preflight writes /tmp/cpcu_smoother_config.txt from
+     * runtime.json: one tab-separated line per slot with the live
+     * velocity / accel / deadband / bias the smoother is using. This
+     * is the same data IPC_RuntimeConfig carries to cpcu_io, just made
+     * visible here so the operator can confirm a calibration without
+     * leaving the TUI. */
+    draw_section(r, 1, "SMOOTHER CONFIG (per-servo motion profile, from runtime.json)");
+    r++;
+    {
+        FILE *sf = fopen("/tmp/cpcu_smoother_config.txt", "r");
+        if(!sf)
+        {
+            attron(COLOR_PAIR(CP_DIM));
+            mvprintw(r, 1,
+                "smoother digest not available — restart with './launch.sh tui' "
+                "to populate /tmp/cpcu_smoother_config.txt");
+            attroff(COLOR_PAIR(CP_DIM));
+            r++;
+        }
+        else
+        {
+            /* Column header */
+            attron(COLOR_PAIR(CP_HEADER) | A_BOLD);
+            mvprintw(r, 3, "%-10s %12s %15s %12s %10s",
+                     "Servo", "Vel (us/s)", "Accel (us/s²)",
+                     "Deadband", "Bias");
+            attroff(COLOR_PAIR(CP_HEADER) | A_BOLD);
+            r++;
+
+            char line[256];
+            while(r < g_term_h - 1 && fgets(line, sizeof(line), sf))
+            {
+                size_t L = strlen(line);
+                while(L > 0 && (line[L-1] == '\n' || line[L-1] == '\r'))
+                    line[--L] = '\0';
+                if(L == 0) continue;
+
+                /* parse name\tvel\taccel\tdeadband\tbias */
+                char *p_name = line;
+                char *p_vel  = strchr(p_name, '\t'); if(!p_vel)  continue; *p_vel++  = '\0';
+                char *p_acc  = strchr(p_vel,  '\t'); if(!p_acc)  continue; *p_acc++  = '\0';
+                char *p_db   = strchr(p_acc,  '\t'); if(!p_db)   continue; *p_db++   = '\0';
+                char *p_bias = strchr(p_db,   '\t'); if(!p_bias) continue; *p_bias++ = '\0';
+
+                long vel = atol(p_vel), acc = atol(p_acc);
+                long db  = atol(p_db),  bs  = atol(p_bias);
+
+                /* color hints: red if vel/accel is zero (servo would freeze),
+                 * dim if bias is non-zero (operator override). */
+                int vel_cp  = (vel  > 0) ? CP_GOOD : CP_BAD;
+                int acc_cp  = (acc  > 0) ? CP_GOOD : CP_BAD;
+                int bias_cp = (bs  != 0) ? CP_WARN : CP_DIM;
+
+                mvprintw(r, 3, "%-10s ", p_name);
+                attron(COLOR_PAIR(vel_cp));
+                printw("%12ld ", vel);
+                attroff(COLOR_PAIR(vel_cp));
+                attron(COLOR_PAIR(acc_cp));
+                printw("%15ld ", acc);
+                attroff(COLOR_PAIR(acc_cp));
+                attron(COLOR_PAIR(CP_CYAN));
+                printw("%12ld ", db);
+                attroff(COLOR_PAIR(CP_CYAN));
+                attron(COLOR_PAIR(bias_cp));
+                printw("%+10ld", bs);
+                attroff(COLOR_PAIR(bias_cp));
+                r++;
+            }
+            fclose(sf);
+        }
+    }
+    r++;
+
+    draw_hline(r - 1, 0, g_tui_w);
+
     /*==================== BSAU SIDE ====================*/
     draw_section(r, 1,       "BSAU (BIOSIGNAL ACQUISITION UNIT)");
     draw_section(r, g_col_r, "CPCU (CENTRAL PROCESSING & CONTROL UNIT)");
