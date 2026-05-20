@@ -1606,6 +1606,136 @@ cmd_attach() {
     fi
 }
 
+# ─────────────────────────────────────────────────────────────────────
+# cmd_stream — UART-only mode, no TUI, no tmux, no curses overhead
+#
+# Runs the absolute minimum needed to push EMG over UART:
+#   1. cpcu_kernel  (background) — radio + IPC shared memory
+#   2. cpcu_io      (background) — PCA9685 + safety
+#   3. cpcu_dsp.py  (foreground) — feature extract + ML + UART stream
+#
+# Why this exists: the full ./launch.sh tui spawns 3-4 tmux windows
+# and runs the ncurses TUI at 30 Hz, which adds ~25% CPU on a Pi 5
+# core. For host-side monitor.py / predictX / AI-team debugging we
+# only need the UART output — this strips the rest. CPU drops to
+# ~5%, freeing cycles for the parallel DSP threads and reducing
+# heat.
+#
+# Cleans up its background processes on Ctrl-C or EXIT.
+# ─────────────────────────────────────────────────────────────────────
+cmd_stream() {
+    [ -x "${BIN_DIR}/cpcu_kernel" ] \
+        || fatal "Missing ${BIN_DIR}/cpcu_kernel — run './launch.sh build'"
+    [ -x "${BIN_DIR}/cpcu_io" ] \
+        || fatal "Missing ${BIN_DIR}/cpcu_io — run './launch.sh build'"
+
+    sync_servo_pca_ch_to_runtime
+    publish_servo_names
+    publish_servo_pca_ch_digest
+    publish_smoother_config
+
+    # Require a UART device. We try the operator's chosen path first,
+    # then the usual Pi locations. If none is writable we abort early
+    # — silent UART would defeat the purpose of stream mode.
+    local uart_dev=""
+    if [ -n "${CPCU_UART_DEBUG:-}" ]; then
+        uart_dev="${CPCU_UART_DEBUG}"
+    else
+        for d in /dev/ttyAMA0 /dev/serial0 /dev/ttyS0 /dev/ttyUSB0; do
+            [ -w "${d}" ] && { uart_dev="${d}"; break; }
+        done
+    fi
+    if [ -z "${uart_dev}" ]; then
+        err "No writable UART device found (tried CPCU_UART_DEBUG, "
+        err "/dev/ttyAMA0, /dev/serial0, /dev/ttyS0, /dev/ttyUSB0)."
+        err "Enable Pi UART:  sudo raspi-config → Interface → Serial"
+        err "Group membership: sudo usermod -aG dialout \$USER ; relog"
+        return 1
+    fi
+    export CPCU_UART_DEBUG="${uart_dev}"
+
+    log "─────────────────────────────────────────────────────────"
+    log "STREAM MODE — UART-only (no TUI, no tmux)"
+    log "  UART device : ${CPCU_UART_DEBUG}"
+    log "  UART baud   : 921600"
+    log "  DSP script  : ${CPCU_DSP_PATH:-${CPCU_ROOT}/python/cpcu_dsp.py}"
+    log "  Logs        : ${LOG_DIR}/"
+    log "─────────────────────────────────────────────────────────"
+
+    mkdir -p "${LOG_DIR}"
+    local kernel_log io_log dsp_log
+    kernel_log=$(make_log_path "stream_kernel")
+    io_log=$(make_log_path     "stream_io")
+    dsp_log=$(make_log_path    "stream_dsp")
+
+    # Track PIDs so the cleanup trap can kill the right processes.
+    local kernel_pid="" io_pid="" dsp_pid=""
+
+    _stream_cleanup() {
+        log "Stopping stream..."
+        for pid in "${dsp_pid}" "${io_pid}" "${kernel_pid}"; do
+            if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+                kill -TERM "${pid}" 2>/dev/null || true
+            fi
+        done
+        sleep 0.3
+        for pid in "${dsp_pid}" "${io_pid}" "${kernel_pid}"; do
+            if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+                kill -KILL "${pid}" 2>/dev/null || true
+            fi
+        done
+        log "Stream stopped."
+    }
+    trap _stream_cleanup EXIT INT TERM
+
+    # 1) Kernel — pinned to core 0 for radio determinism.
+    log "Starting cpcu_kernel..."
+    ( taskset -c 0 "${BIN_DIR}/cpcu_kernel" --log >> "${kernel_log}" 2>&1 ) &
+    kernel_pid=$!
+    sleep 0.5
+    if ! kill -0 "${kernel_pid}" 2>/dev/null; then
+        err "cpcu_kernel failed to start — see ${kernel_log}"
+        tail -20 "${kernel_log}" 2>/dev/null
+        return 1
+    fi
+
+    # 2) Wait for IPC shared memory to exist before launching io/dsp.
+    local waited=0
+    while [ ! -e /dev/shm/cpcu_ipc ] && [ "${waited}" -lt 50 ]; do
+        sleep 0.1
+        waited=$((waited + 1))
+    done
+    if [ ! -e /dev/shm/cpcu_ipc ]; then
+        err "IPC shared memory never appeared — kernel boot failed"
+        return 1
+    fi
+    log "IPC ready (after ${waited}00ms)"
+
+    # 3) IO — PCA9685 driver + safety FSM. Background, logs to file.
+    log "Starting cpcu_io..."
+    ( taskset -c 3 "${BIN_DIR}/cpcu_io" >> "${io_log}" 2>&1 ) &
+    io_pid=$!
+    sleep 0.3
+    if ! kill -0 "${io_pid}" 2>/dev/null; then
+        warn "cpcu_io exited early — see ${io_log} (continuing without servos)"
+    fi
+
+    # 4) DSP — runs in foreground. Its stdout (banner + status) goes
+    # to the terminal so the operator can see what's happening; UART
+    # bytes go to the configured serial device.
+    log "Starting cpcu_dsp.py — output below. Ctrl-C to stop."
+    log "─────────────────────────────────────────────────────────"
+    local dsp_path="${CPCU_DSP_PATH:-${CPCU_ROOT}/python/cpcu_dsp.py}"
+    if [ ! -f "${dsp_path}" ]; then
+        err "cpcu_dsp.py not found at ${dsp_path}"
+        return 1
+    fi
+    # taskset to cores 1-2 (the isolated cores reserved for DSP).
+    # SCHED_FIFO would be nicer but requires CAP_SYS_NICE.
+    taskset -c 1,2 python3 "${dsp_path}" 2>&1 | tee -a "${dsp_log}"
+    # Trap fires after exec returns / on Ctrl-C.
+}
+
 cmd_stop() {
     if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
         log "No active session."
@@ -3391,6 +3521,7 @@ case "${MODE}" in
     ws|web)                 cmd_ws "$@" ;;
 
     attach)                 cmd_attach ;;
+    stream|uart)            cmd_stream ;;
     stop)                   cmd_stop ;;
 
     grant-caps)             cmd_grant_caps ;;
