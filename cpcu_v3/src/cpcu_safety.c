@@ -47,6 +47,13 @@ void SAFETY_Init(SAFETY_Context *ctx)
     ctx->boot_us            =   safety_now_us();
 }
 
+void SAFETY_SetIgnoreBattery(SAFETY_Context *ctx, bool ignore)
+{
+    if(!ctx) return;
+    ctx->ignore_battery = ignore;
+    if(ignore) ctx->battery.critical = false;
+}
+
 /*============= SEQUENCE GAP ===============================================*/
 
 uint32_t SAFETY_SeqGap(SAFETY_Context *ctx, uint8_t seq)
@@ -158,7 +165,14 @@ void SAFETY_FeedPacket(SAFETY_Context *ctx, const WL_Packet *pkt,
     ctx->battery.voltage    =   pkt->vbat_raw * (3.3f / 4095.0f) * SAFETY_VBAT_DIVIDER;
     ctx->battery.level      =   WL_BATT_GET(pkt->flags);
 
-    if(!ctx->battery.critical)
+    /* Battery with hysteresis. When ignore_battery is set (bench
+     * mode, no battery wired), short-circuit the entire check so a
+     * vbat_raw=0 reading never latches BATT_CRITICAL. */
+    if(ctx->ignore_battery)
+    {
+        ctx->battery.critical = false;
+    }
+    else if(!ctx->battery.critical)
     {
         ctx->battery.critical = (ctx->battery.level == WL_BATT_CRIT)
                               || (ctx->battery.voltage < SAFETY_VBAT_CRITICAL_V

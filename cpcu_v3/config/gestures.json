@@ -74,6 +74,20 @@
                         "freq_ms": 60
                     }
                 },
+                "hand": {
+                    "mode": "velocity",
+                    "channels": {
+                        "Gripper": {
+                            "rate_us_s": -200,
+                            "snap": true
+                        }
+                    },
+                    "audio": {
+                        "voice": "voice_hand",
+                        "freq_hz": 330,
+                        "freq_ms": 80
+                    }
+                },
                 "flex": {
                     "mode": "velocity",
                     "channels": {
@@ -97,20 +111,6 @@
                     "audio": {
                         "voice": "voice_ext",
                         "freq_hz": 660,
-                        "freq_ms": 80
-                    }
-                },
-                "hand": {
-                    "mode": "velocity",
-                    "channels": {
-                        "Gripper": {
-                            "rate_us_s": -200,
-                            "snap": true
-                        }
-                    },
-                    "audio": {
-                        "voice": "voice_hand",
-                        "freq_hz": 330,
                         "freq_ms": 80
                     }
                 }
@@ -149,6 +149,21 @@
                         "freq_ms": 60
                     }
                 },
+                "hand": {
+                    "mode": "velocity",
+                    "channels": {
+                        "Gripper": {
+                            "rate_us_s": -400,
+                            "snap": true
+                        }
+                    },
+                    "grip_firm_us": 1080,
+                    "audio": {
+                        "voice": "voice_grip",
+                        "freq_hz": 550,
+                        "freq_ms": 50
+                    }
+                },
                 "flex": {
                     "mode": "velocity",
                     "channels": {
@@ -173,21 +188,6 @@
                         "voice": "voice_ext_l",
                         "freq_hz": 660,
                         "freq_ms": 80
-                    }
-                },
-                "hand": {
-                    "mode": "velocity",
-                    "channels": {
-                        "Gripper": {
-                            "rate_us_s": -400,
-                            "snap": true
-                        }
-                    },
-                    "grip_firm_us": 1080,
-                    "audio": {
-                        "voice": "voice_grip",
-                        "freq_hz": 550,
-                        "freq_ms": 50
                     }
                 }
             }

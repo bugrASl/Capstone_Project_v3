@@ -35,6 +35,70 @@
 #define TUI_MIN_HEIGHT      24
 #define REFRESH_US          33333       /* 30 Hz */
 
+/*============= LATENCY BUDGETS ============================================================
+ * Per-stage latency in the BSAU-EMG → servo-motion pipeline. Constants
+ * are compile-time fixed (well-characterised hardware delays); the
+ * `tui_lat_*_us()` helpers below extract per-frame measurements from
+ * the IPC_DSPExport. Whatever the DSP doesn't measure we leave at the
+ * compile-time worst case so the latency bars on the OVERVIEW page
+ * don't silently under-report.
+ *
+ * Keep these in lockstep with the LAT_* constants in cpcu_dsp.py —
+ * see the EXPORT_LAT block there. */
+#define TUI_LAT_ADC_PACK_US        226u    /* BSAU ADC sample + 12-bit pack */
+#define TUI_LAT_WIRELESS_US        332u    /* NRF24L01+ 2 Mbps + ESB ACK    */
+#define TUI_LAT_SPI_UNPACK_US       36u    /* cpcu_io SPI read + ring push  */
+#define TUI_LAT_SMOOTHER_I2C_US    610u    /* smoother tick + I2C burst     */
+#define TUI_LAT_SERVO_MECH_US    15000u    /* SG90 mechanical (MG995: 25000)*/
+
+/* Per-frame latency accessors. These read fields the DSP layer
+ * publishes through IPC_DSPExport's reserved bytes. We treat the
+ * `inference_time_us` field as the canonical "DSP compute" budget
+ * since that's what the bridge actually populates today; the other
+ * two fields are read from the export's _pad1 region at fixed byte
+ * offsets that cpcu_dsp.py writes in the same place. If the offsets
+ * carry zero (DSP didn't fill them in yet), the helpers return 0
+ * and the OVERVIEW page falls back to the compile-time const. */
+#include <stddef.h>
+#include <stdint.h>
+#include "cpcu_ipc.h"
+
+/* Byte offsets inside IPC_DSPExport._pad1[] where cpcu_dsp.py drops
+ * extra latency telemetry. Defined here (header-only) so neither
+ * side has to maintain a duplicate struct definition. Must stay in
+ * lockstep with EXPORT_PKT_LATENCY / EXPORT_SEQ_AGE / EXPORT_RING_DWELL
+ * / EXPORT_DSP_US in cpcu_ipc_bridge.py. */
+#define TUI_LAT_OFF_PKT_TO_SERVO   0u      /* uint32_t @ pad1[ 0.. 3] */
+#define TUI_LAT_OFF_SEQ_AGE        4u      /* uint32_t @ pad1[ 4.. 7] */
+#define TUI_LAT_OFF_RING_DWELL     8u      /* uint32_t @ pad1[ 8..11] */
+#define TUI_LAT_OFF_DSP_US        12u      /* uint32_t @ pad1[12..15] */
+
+static inline uint32_t tui_lat_read_pad1_u32(const IPC_DSPExport *e, size_t off)
+{
+    if(!e) return 0;
+    uint32_t v = 0;
+    const uint8_t *base = (const uint8_t *)e + offsetof(IPC_DSPExport, _pad1);
+    for(size_t i = 0; i < 4; i++) ((uint8_t *)&v)[i] = base[off + i];
+    return v;
+}
+
+static inline uint32_t tui_lat_pkt_to_servo_us(const IPC_DSPExport *e)
+{
+    return tui_lat_read_pad1_u32(e, TUI_LAT_OFF_PKT_TO_SERVO);
+}
+static inline uint32_t tui_lat_ring_dwell_us(const IPC_DSPExport *e)
+{
+    return tui_lat_read_pad1_u32(e, TUI_LAT_OFF_RING_DWELL);
+}
+static inline uint32_t tui_lat_dsp_compute_us(const IPC_DSPExport *e)
+{
+    return tui_lat_read_pad1_u32(e, TUI_LAT_OFF_DSP_US);
+}
+static inline uint32_t tui_lat_seq_age(const IPC_DSPExport *e)
+{
+    return tui_lat_read_pad1_u32(e, TUI_LAT_OFF_SEQ_AGE);
+}
+
 /* IO heartbeat thresholds (relative to cpcu_io's HEARTBEAT_INTERVAL_US =
  * 100 ms; see comment block in cpcu_tui_render.c). */
 #define IO_HB_WARN_MS       200u

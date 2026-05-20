@@ -74,7 +74,7 @@ extern "C" {
                                                  *  true → CheckSystem stuck
                                                  *  false → servos always
                                                  *  parked at neutral.
-                                                 *  Restored to 2.0 (corrected)./
+                                                 *  Restored to 2.0 (corrected). */
 
 /* DSP */
 #define SAFETY_DSP_STALL_MS             2000

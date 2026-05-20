@@ -1,43 +1,96 @@
 {
     "// schema_version": "REQUIRED. Bump when removing/renaming fields.",
     "schema_version": 2,
-
-    "// servo_min_us": "Per-servo minimum pulse width. Order matches sorted-by-pca_ch slot order: S0=Base, S1=Elbow, S2=Forearm, S3=Wrist1, S4=Wrist2, S5=Gripper.",
-    "servo_min_us": [ 498, 1074, 1074, 1001, 1001,  976 ],
+    "// servo_min_us": "Per-servo minimum pulse width. Order: S0=Base, S1=Upper, S2=Last, S3=Joint1, S4=Joint2, S5=Gripper.",
+    "servo_min_us": [
+        498,
+        1074,
+        1074,
+        1001,
+        1001,
+        976
+    ],
     "// servo_max_us": "Per-servo maximum pulse width. Same order.",
-    "servo_max_us": [ 2500, 1953, 1953, 2002, 2002, 1733 ],
+    "servo_max_us": [
+        2500,
+        1953,
+        1953,
+        2002,
+        2002,
+        1733
+    ],
     "// servo_bias_us": "Per-servo trim offset, signed micros (-100..+100).",
-    "servo_bias_us": [ 0, 0, 0, 0, 0, 0 ],
-
-    "// smooth_velocity": "Max pulse delta per 50 Hz smoother tick (us/tick).",
-    "smooth_velocity": [ 60, 60, 60, 60, 60, 30 ],
-    "// smooth_accel":    "Max accel per tick^2 (us/tick^2). v_max reached in ~5 ticks (100 ms) for snappy-but-jerk-free motion.",
-    "smooth_accel":    [ 12, 12, 12, 12, 12, 6 ],
-    "// smooth_deadband": "Hold-pose deadband in micros. 10 us ~= 2 PCA9685 LSBs.",
-    "smooth_deadband": [ 10, 10, 10, 10, 10, 10 ],
-
-    "// servo_pca_ch": "Logical slot (0..5) -> physical PCA9685 channel (0..15). launch.sh preflight syncs this from gestures.json's pca_ch fields; manual edits here are overwritten on the next launch.",
-    "servo_pca_ch":    [ 0, 1, 2, 3, 4, 5 ],
-
-    "// gravity_dir":  "Per-servo gravity-comp direction: +1 = gravity pulls TOWARD increasing-us, -1 = pulls toward decreasing-us, 0 = no comp. Elbow falls toward lower us (lift up needs help), Forearm tilts toward higher us.",
-    "gravity_dir":        [ 0, -1, 1, 0, 0, 0 ],
-    "// gravity_scale_pct": "Compensation strength as % of nominal velocity. 30 = boost UP-direction by 30%, dampen DOWN-direction by 30%. Tune in pca_testbench with G + ',' / '.' keys.",
-    "gravity_scale_pct":  [ 0, 30, 30, 0, 0, 0 ],
-
-    "// interp_conf_floor_pct": "Classifier confidence floor for class hold (0-100).",
+    "servo_bias_us": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+    ],
+    "// smooth_velocity": "Max us/tick (50 Hz tick) per servo. SG90 mech max ~133 us/tick @ 6666 us/s; we cap at 50%% for gearbox margin. Order: Base, Elbow, Forearm, Wrist1, Wrist2, Gripper.",
+    "smooth_velocity": [
+        60,
+        60,
+        60,
+        60,
+        60,
+        30
+    ],
+    "// smooth_accel": "Max us/tick^2 per servo. Sized so v_max is reached in ~5 ticks (100 ms) \u2014 snappy without jerk.",
+    "smooth_accel": [
+        12,
+        12,
+        12,
+        12,
+        12,
+        6
+    ],
+    "// smooth_deadband": "Hold-pose deadband in micros. 10 us = 2 PCA9685 LSBs (~4.88 us each). Below this PWM can't move anyway.",
+    "smooth_deadband": [
+        10,
+        10,
+        10,
+        10,
+        10,
+        10
+    ],
+    "// servo_pca_ch": "Logical slot (0..5) -> physical PCA9685 channel (0..15). Same order as servo arrays above. Default is identity; override to wire to non-contiguous PCA channels.",
+    "servo_pca_ch": [
+        0,
+        2,
+        4,
+        7,
+        11,
+        15
+    ],
+    "// interp_conf_floor_pct": "SVM confidence floor for class hold (0-100).",
     "interp_conf_floor_pct": 40,
-    "// interp_conf_ceil_pct":  "Classifier confidence ceiling above which class commits (0-100).",
-    "interp_conf_ceil_pct":  85,
-
-    "// grip_firm_us":           "Soft-grip firm-hold pulse width.",
+    "// interp_conf_ceil_pct": "SVM confidence ceiling above which class commits (0-100).",
+    "interp_conf_ceil_pct": 85,
+    "// grip_firm_us": "Soft-grip firm-hold pulse width.",
     "grip_firm_us": 1100,
-    "// grip_touch_us":          "Soft-grip touch pulse width.",
+    "// grip_touch_us": "Soft-grip touch pulse width.",
     "grip_touch_us": 1200,
-    "// grip_open_us":           "Soft-grip fully-open pulse width.",
+    "// grip_open_us": "Soft-grip fully-open pulse width.",
     "grip_open_us": 1500,
-    "// grip_stall_recover_ms":  "Time before stall watchdog retreats to grip_touch_us.",
+    "// grip_stall_recover_ms": "Time before stall watchdog retreats to grip_touch_us.",
     "grip_stall_recover_ms": 2000,
-
-    "// safety_ignore_battery": "Set to 1 for bench tests with no battery wired. Disables BATT_CRITICAL detection so the FSM doesn't latch SAFE on first packet.",
-    "safety_ignore_battery": 1
+    "safety_ignore_battery": 1,
+    "gravity_dir": [
+        0,
+        -1,
+        1,
+        0,
+        0,
+        0
+    ],
+    "gravity_scale_pct": [
+        0,
+        30,
+        30,
+        0,
+        0,
+        0
+    ]
 }
