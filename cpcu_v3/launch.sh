@@ -1168,6 +1168,25 @@ with_ws_preflight() {
     fi
     ws_static_dir >/dev/null \
         || { err "Web static dir not found (looked at /opt/cpcu/ws_static and ${CPCU_ROOT}/web/static)"; return 1; }
+
+    # Port 8765 may be held by:
+    #   - a stale cpcu_ws from a previous crash (no longer in tmux)
+    #   - the host-side `socat` tunnel from `pi web` ending without
+    #     cleanup on the Pi side (rare but happens after kill -9)
+    # Either way, bind() will fail with EADDRINUSE and the WS pane
+    # vanishes. fuser -k is best-effort: silent when nothing holds
+    # the port, kills with SIGKILL when something does.
+    if command -v fuser >/dev/null 2>&1; then
+        local owners
+        owners=$(fuser 8765/tcp 2>/dev/null || true)
+        if [ -n "${owners}" ]; then
+            warn "port 8765 held by pid(s):${owners} — releasing"
+            fuser -k -TERM 8765/tcp 2>/dev/null || true
+            sleep 0.3
+            fuser -k 8765/tcp       2>/dev/null || true
+            sleep 0.2
+        fi
+    fi
     return 0
 }
 
