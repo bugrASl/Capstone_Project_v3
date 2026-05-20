@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """
-test_ipc_bridge.py — Validate Python IPC bridge against C struct layout.
+test_ipc_bridge.py — validate the Python IPC bridge against the C struct layout.
 
-Run this ALONGSIDE a running cpcu_kernel (which creates the shared memory).
-It reads known fields written by C code and verifies the Python offsets match.
+ROLE
+    Catches C-vs-Python offset drift between cpcu_ipc.h and
+    cpcu_ipc_bridge.py at the byte level. Reads fields the C side
+    has written and verifies the Python view sees identical values.
+    Also exercises SeqLock write/read, ring indexing, and DSPExport.
 
-Also tests: SeqLock write/read, ring buffer indexing, DSP export.
+DEPENDENCIES
+    cpcu_kernel running     : creates and initialises /dev/shm/cpcu_ipc.
+    cpcu_ipc_bridge.py      : the module under test.
+    cpcu_ipc.h              : the source-of-truth layout that the
+                              bridge must mirror.
 
-Usage:
-    # Terminal 1: start kernel (creates shm)
+USAGE
+    # Terminal 1
     ./cpcu_kernel
-
-    # Terminal 2: run this test
+    # Terminal 2
     python3 test_ipc_bridge.py
-
-Author: bugrASl
-Date:   April 2026
 """
 
 import struct
@@ -78,7 +81,12 @@ def test_section_offsets():
     print("\n--- Section Offset Validation ---")
     ASSERT(OFF_CTRL          == 0,                                      f"CTRL at 0")
     ASSERT(OFF_RING          == 192,                                    f"RING at 192")
-    ASSERT(OFF_MOTOR         == 192 + 64 * 1024,                        f"MOTOR at {OFF_MOTOR}")
+    # 192 + 64 B/entry × 4096 entries = 262 336.  The "1024" that used
+    # to be here was the silent ring-size mismatch with cpcu_ipc.h.
+    # If this assert fires after a future change, ALSO update RING_SIZE
+    # in cpcu_ipc_bridge.py and IPC_SENSOR_RING_SIZE in cpcu_ipc.h —
+    # they MUST stay equal.
+    ASSERT(OFF_MOTOR         == 192 + 64 * 4096,                        f"MOTOR at {OFF_MOTOR}")
     ASSERT(OFF_DIAG          == OFF_MOTOR + 128,                        f"DIAG at {OFF_DIAG}")
     ASSERT(OFF_EXPORT        == OFF_DIAG + 128,                         f"EXPORT at {OFF_EXPORT}")
     ASSERT(OFF_CONFIG        == OFF_EXPORT + SZ_EXPORT,                 f"CONFIG at {OFF_CONFIG}")

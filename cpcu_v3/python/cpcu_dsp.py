@@ -1,25 +1,91 @@
 #!/usr/bin/env python3
 """cpcu_dsp.py — live DSP + ML inference pipeline for the CPCU.
 
-Reads EMG from the IPC ring, filters, extracts features, runs ML inference
-for one or more gesture groups in parallel, integrates servo targets via
-velocity mode, and publishes motor commands.
+ROLE
+    Runs pinned to CPU cores 1-2 at SCHED_FIFO priority 80, spawned
+    by cpcu_kernel. Drains the IPC sensor ring written by cpcu_io,
+    applies a per-channel filter cascade (bandpass + notches +
+    envelope), extracts 7 features per channel, runs ML inference for
+    one or more gesture groups in parallel, and writes the integrated
+    servo targets back into the IPC motor command region. cpcu_io
+    then drives the PCA9685 from those targets at 50 Hz.
 
-Config sources (priority order):
-  1. config/gestures.json     — gesture_groups + servo_channels (schema v5)
-  2. models/velocity_map.json — operator-calibrated rates (overrides)
-  3. config/runtime.json      — hardware tuning (smoother, grip, bias)
-  4. models/*.pkl             — trained ML model + scaler (per group)
+    The classifier loaded from models/arm.pkl is a sklearn
+    RandomForestClassifier (200 trees) with 4 alphabetical classes
+    (ext, flex, hand, rest) shared between the right_arm and left_arm
+    groups — same muscles, same model.
 
-Top-level structure (read this first):
-  - CONFIG LOADERS:   load_gestures, load_velocity_map, load_runtime, discover_model
-  - DSP FILTERS:      butter_bandpass, notch_filter, envelope, extract_features,
-                      process_window  (per-channel pipeline, ports the team's code)
-  - GROUP STATE:      GroupState  (one instance per gesture_group in gestures.json)
-  - HELPERS:          confidence_scale, _resolve_gesture_rates, UART debug
-  - INFERENCE LOOP:   run_inference  (delegates to small helper functions)
-  - CALIBRATION:      run_calibrate  (record rest, compute thresholds)
-  - ENTRY:            main
+DEPENDENCIES — what this script READS
+    config/gestures.json     : Gesture groups (right_arm, left_arm),
+                               EMG channel assignments, servo channel
+                               map, per-group confidence + hysteresis.
+                               Schema v5.
+    models/arm.pkl           : Trained RandomForest + StandardScaler.
+                               Loaded once at startup; same model
+                               serves both arm groups.
+    models/velocity_map_<op>.json : Per-operator velocity preferences
+                               written by cpcu_calibrate.py. Falls
+                               back to velocity_map.json.
+    models/dynamic_noise_thresholds[_<op>].json : Per-muscle envelope
+                               floor for the noise-gate. Aleyna's
+                               canonical file is the default; an
+                               operator-specific file overrides if
+                               present. Never overwritten by the
+                               --calibrate flow on this side.
+    config/runtime.json      : (via IPC_RuntimeConfig from kernel)
+                               servo limits, smoother params,
+                               gravity-comp bias, grip thresholds.
+    /dev/shm/cpcu_ipc        : Sensor ring, motor command, dsp_export,
+                               dsp_filtered — through cpcu_ipc_bridge.
+    /dev/ttyAMA0 (optional)  : 1 kHz raw-sample UART debug stream when
+                               CPCU_UART_DEBUG points to a tty.
+                               This is the ONLY UART writer in the
+                               system (cpcu_io's was retired).
+
+DOWNSTREAM — what reads what this script PRODUCES
+    cpcu_io                  : Motor command (servo_us[6], gesture_id,
+                               confidence_pct, latency_ack).
+    cpcu_tui                 : dsp_export, dsp_filtered, plus three
+                               /tmp digest files:
+                                 /tmp/cpcu_servo_names.txt
+                                 /tmp/cpcu_group_state.txt
+                                 /tmp/cpcu_gestures_digest.txt
+    cpcu_ws                  : same dsp_export + dsp_filtered; forwards
+                               groups[] from cpcu_group_state.txt.
+    monitor.py / predictX.py : raw 6-channel UART stream at 1 kHz when
+                               CPCU_UART_DEBUG is set. Format matches
+                               predictX.py's FS=1000 expectation.
+
+CROSS-MODULE EFFECTS
+    - Adding a new class to arm.pkl: also extend CLS_NAMES and bump
+      DATASET_LABEL_COUNT in cpcu_tui.h, otherwise the overview
+      class-bar loop displays "EXT/FLEX/HAND/REST" past the trained
+      set.
+    - Changing WINDOW_HI, STRIDE_HI, or filter cutoffs: the TUI's
+      DSP-page and CONFIG-page reference card hardcode the same
+      numbers; update those strings in cpcu_tui_render.c.
+    - Changing the per-window window/stride math also changes the
+      dsp_filtered publish rate which the web dashboard documents.
+    - The model was trained against the filter chain in
+      process_window(); modifying that chain INVALIDATES the model
+      and requires retraining. predictX.py uses the same chain.
+
+CONFIG SOURCE PRIORITY (highest first)
+    1. config/gestures.json     — gesture_groups + servo_channels
+    2. models/velocity_map.json — operator-calibrated rates
+    3. config/runtime.json      — hardware tuning
+    4. models/*.pkl             — trained model + scaler per group
+
+CLI
+    --calibrate SEC            Record N seconds of rest, write the
+                               operator's dynamic_noise_thresholds_<op>.json
+                               (Aleyna's canonical file untouched).
+    --verbose                  Per-window inference log.
+    --operator NAME            Load operator-specific profile
+                               (velocity_map_<NAME>.json and
+                               dynamic_noise_thresholds_<NAME>.json
+                               when present). Defaults to
+                               $CPCU_OPERATOR or "default".
 """
 import argparse
 import glob
@@ -50,7 +116,6 @@ MODEL_DIR       = os.environ.get(
     "CPCU_MODEL_DIR", os.path.join(REPO_ROOT, "models"))
 INSTALLED_MODEL = "/opt/cpcu/models"
 INSTALLED_CFG   = "/opt/cpcu/config.json"
-THRESHOLDS_PATH = os.path.join(MODEL_DIR, "noise_thresholds.json")
 
 # Per-muscle envelope-floor thresholds produced by the AI team's
 # proccess.py at training time. Same muscle order on BOTH arms
@@ -62,32 +127,75 @@ THRESHOLDS_PATH = os.path.join(MODEL_DIR, "noise_thresholds.json")
 # short-circuit the classifier to "rest" — no ML call, no jitter.
 # This is exactly what the training pipeline does to label rest data;
 # applying it at runtime keeps train/test conditions aligned.
-DYNAMIC_THR_PATH = os.path.join(MODEL_DIR, "dynamic_noise_thresholds.json")
-_dyn_thresh = None      # populated lazily by _load_dynamic_thresholds()
+#
+# OPERATOR-SPECIFIC OVERRIDE:
+#   The canonical file dynamic_noise_thresholds.json is what Aleyna's
+#   training pipeline produced and is the default for every operator.
+#   Recording new rest data with `./launch.sh calibrate --operator
+#   <name>` writes dynamic_noise_thresholds_<name>.json without
+#   touching the canonical file. At runtime the operator's file wins
+#   if present, otherwise we fall back to Aleyna's. This is per
+#   operator's request — never overwrite the training-time defaults.
+DYNAMIC_THR_DEFAULT_PATH = os.path.join(MODEL_DIR, "dynamic_noise_thresholds.json")
+
+def _dynamic_thr_path(operator):
+    """Path to the rest-noise threshold file for the given operator.
+
+    'default' → Aleyna's canonical file. Any other name → operator
+    -specific file, even if it doesn't yet exist (caller falls back)."""
+    if not operator or operator == "default":
+        return DYNAMIC_THR_DEFAULT_PATH
+    return os.path.join(MODEL_DIR, f"dynamic_noise_thresholds_{operator}.json")
+
+_dyn_thresh = None              # cached (operator, [s1, s2, s3]) tuple
+_dyn_thresh_op = None           # which operator the cache is for
 
 
-def _load_dynamic_thresholds():
-    """Read s1/s2/s3 → [thr_hand, thr_biceps, thr_triceps]. Returns None
-    if the file is missing or malformed (DSP then falls through to the
-    normal classify-everything path, same as before)."""
-    global _dyn_thresh
-    if _dyn_thresh is not None:
+def _load_dynamic_thresholds(operator="default"):
+    """Read s1/s2/s3 → [thr_hand, thr_biceps, thr_triceps].
+
+    Lookup order (first hit wins):
+      1. dynamic_noise_thresholds_<operator>.json  (operator-specific)
+      2. dynamic_noise_thresholds.json             (Aleyna's canonical)
+
+    Returns the threshold list, or None when neither file exists or
+    is malformed (DSP then falls through to the plain classifier,
+    same as before). Cached per-operator so repeated calls are free."""
+    global _dyn_thresh, _dyn_thresh_op
+    if _dyn_thresh is not None and _dyn_thresh_op == operator:
         return _dyn_thresh
-    try:
-        with open(DYNAMIC_THR_PATH) as f:
-            d = json.load(f)
-        _dyn_thresh = [
-            float(d.get("s1", 0.0)),
-            float(d.get("s2", 0.0)),
-            float(d.get("s3", 0.0)),
-        ]
-        print(f"[DSP] loaded noise-floor gates "
-              f"hand={_dyn_thresh[0]:.1f} biceps={_dyn_thresh[1]:.1f} "
-              f"triceps={_dyn_thresh[2]:.1f}", flush=True)
-    except Exception as e:
-        print(f"[DSP] no dynamic_noise_thresholds.json "
-              f"(falls through to plain classifier): {e}", flush=True)
-        _dyn_thresh = []   # mark "tried, none available"
+
+    candidates = []
+    if operator and operator != "default":
+        candidates.append(_dynamic_thr_path(operator))
+    candidates.append(DYNAMIC_THR_DEFAULT_PATH)
+
+    for path in candidates:
+        try:
+            with open(path) as f:
+                d = json.load(f)
+            _dyn_thresh = [
+                float(d.get("s1", 0.0)),
+                float(d.get("s2", 0.0)),
+                float(d.get("s3", 0.0)),
+            ]
+            _dyn_thresh_op = operator
+            tag = "operator" if path != DYNAMIC_THR_DEFAULT_PATH else "default(Aleyna)"
+            print(f"[DSP] loaded noise-floor gates [{tag}] "
+                  f"hand={_dyn_thresh[0]:.1f} biceps={_dyn_thresh[1]:.1f} "
+                  f"triceps={_dyn_thresh[2]:.1f}  ({os.path.basename(path)})",
+                  flush=True)
+            return _dyn_thresh
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            print(f"[DSP] noise-floor file {path}: {e}", flush=True)
+            continue
+
+    print("[DSP] no dynamic_noise_thresholds*.json found "
+          "(falls through to plain classifier)", flush=True)
+    _dyn_thresh    = []         # mark "tried, none available"
+    _dyn_thresh_op = operator
     return _dyn_thresh
 
 # Sampling rates / window sizing
@@ -683,7 +791,7 @@ def process_window(window_hi):
 # ══════════════════════════════════════════════════════════════════════
 
 def confidence_scale(conf_frac, floor, ceil, curve="quadratic"):
-    """Map SVM probability into a velocity scale [0, 1].
+    """Map classifier probability into a velocity scale [0, 1].
 
     * ``"quadratic"`` — slow start, fast finish (the default; gives clean
       gesture entry without overshoot).
@@ -750,9 +858,12 @@ def _uart_stream_samples(samples_batch):
     """Stream raw ADC samples line-by-line in predictX-compatible CSV.
 
     ``samples_batch`` is the 3-D BSAU array shape (n_entries, 2, 8) that
-    cpcu_io drained from the ring. We flatten across (entries × pairs)
-    to write one CSV line per actual 2 kHz sample. Only channels 0..5
-    are emitted (matches the 6-channel BSAU front-end).
+    cpcu_io drained from the ring. BSAU packs two 2 kHz samples into
+    each 1 kHz packet. We emit ONLY the FIRST sample per packet, giving
+    a clean 1 kHz UART stream — matches predictX.py / monitor.py's
+    FS=1000 expectation and matches the legacy "BSAU UART at 1 kHz"
+    pipeline the team has always used. Only channels 0..5 are emitted
+    (BSAU's 6-channel front-end).
 
     Applies the SAME spike filter as `ingest_sample()` so the host
     monitor.py doesn't see all-zero packets from wireless reacquisition
@@ -762,22 +873,22 @@ def _uart_stream_samples(samples_batch):
     if _uart is None or samples_batch is None:
         return
     try:
-        n_e, n_s, _n_ch = samples_batch.shape
+        n_e = samples_batch.shape[0]
         buf = []
+        # si=0 only: one sample per packet → 1 kHz output rate.
         for ei in range(n_e):
-            for si in range(n_s):
-                row = samples_batch[ei, si]
-                filtered = [0] * 6
-                for ch in range(6):
-                    raw = int(row[ch])
-                    lv  = _uart_last_good[ch]
-                    if raw < ADC_MIN_VALID or raw > ADC_MAX_VALID \
-                       or abs(raw - lv) > ADC_MAX_DELTA:
-                        raw = lv
-                    _uart_last_good[ch] = raw
-                    filtered[ch] = raw
-                buf.append(f"{filtered[0]},{filtered[1]},{filtered[2]},"
-                           f"{filtered[3]},{filtered[4]},{filtered[5]}")
+            row = samples_batch[ei, 0]
+            filtered = [0] * 6
+            for ch in range(6):
+                raw = int(row[ch])
+                lv  = _uart_last_good[ch]
+                if raw < ADC_MIN_VALID or raw > ADC_MAX_VALID \
+                   or abs(raw - lv) > ADC_MAX_DELTA:
+                    raw = lv
+                _uart_last_good[ch] = raw
+                filtered[ch] = raw
+            buf.append(f"{filtered[0]},{filtered[1]},{filtered[2]},"
+                       f"{filtered[3]},{filtered[4]},{filtered[5]}")
         if buf:
             _uart.write(("\n".join(buf) + "\n").encode())
     except Exception:
@@ -835,11 +946,16 @@ class GroupState:
       - per-tick:       conf_pct, class_conf list, last_active class index
     """
 
-    def __init__(self, group_def, prob_thresh=None):
+    def __init__(self, group_def, prob_thresh=None, operator="default"):
         self.name         = group_def["name"]
         self.gestures     = group_def["gestures"]
         self.emg_channels = group_def["emg_channels"]
         self.model_path   = group_def.get("model_path", "")
+        # Each group reads the same operator-scoped noise threshold file.
+        # Stored on the group so _features_and_inference can call
+        # _load_dynamic_thresholds(self.operator) without taking a
+        # second argument.
+        self.operator     = operator
 
         # Resolve prob_thresh precedence:
         #   1. Explicit arg (used by tests)
@@ -1027,7 +1143,7 @@ def _drain_ring_into_groups(ipc, group_states, rx_times, seq_history):
 
 def _features_and_inference(gst, rms_8ch, ipc):
     """Process the most recent window for one group: per-channel filter +
-    feature extract, then SVM inference + hysteresis state-machine update.
+    feature extract, then RandomForest inference + hysteresis state-machine update.
 
     Sets ``gst.conf_pct`` / ``gst.class_conf`` / ``gst.last_active``."""
     features_flat = []
@@ -1058,7 +1174,7 @@ def _features_and_inference(gst, rms_8ch, ipc):
     # straight to "rest". Disabled if thresholds aren't loaded yet
     # (dynamic_noise_thresholds.json missing), in which case behaviour
     # is unchanged from before.
-    thr = _load_dynamic_thresholds()
+    thr = _load_dynamic_thresholds(gst.operator)
     if thr and len(env_means) == len(thr):
         if all(em < t for em, t in zip(env_means, thr)):
             # Force rest. Synthesise a "100% rest" probability vector
@@ -1101,10 +1217,26 @@ def _update_hysteresis(gst, label, conf):
       r→a  rest → any active gesture
       a→r  active → rest
       a→a  active → another active gesture
+
+    Counter-reset semantics (fix for the perceived-lag bug):
+      * label == current_state → counter at 0; we're already there.
+      * conf  <= prob_thresh   → REJECT this vote but DO NOT zero the
+        counter. The old code reset on every below-threshold sample,
+        which meant a noisy stretch of [55%, 38%, 60%, 42%, 70%]
+        predictions never accumulated to a transition even though the
+        intent was clearly there. With this fix the 38% and 42% reads
+        are simply skipped and the 55%, 60%, 70% reads count toward
+        ``needed``.
     """
-    if conf <= gst.prob_thresh or label == gst.current_state:
+    # Already in this state — nothing to vote for.
+    if label == gst.current_state:
         gst.consec_count = 0
         return
+
+    # Low-confidence prediction: skip without punishing prior good votes.
+    if conf <= gst.prob_thresh:
+        return
+
     if gst.current_state == "rest":
         needed = gst.hyst_r2a
     elif label == "rest":
@@ -1316,7 +1448,7 @@ def run_inference(verbose=False, operator="default"):
     Top-level flow per ~20 ms tick:
       1. _drain_ring_into_groups           push BSAU packets into deques
       2. windowing check                   STRIDE_HI new samples + WINDOW_HI total
-      3. per-group _features_and_inference filter + features + SVM + hysteresis
+      3. per-group _features_and_inference filter + features + RF + hysteresis
       4. _handle_edit_mode / _handle_safe_state
       5. _integrate_velocity               combine all groups → current_target
       6. publish motor_cmd + dsp_export    via IPC
@@ -1329,7 +1461,7 @@ def run_inference(verbose=False, operator="default"):
     vel_overrides          = load_velocity_map(operator)
 
     # ── build per-group state + attach models ──
-    group_states = [GroupState(g) for g in groups]
+    group_states = [GroupState(g, operator=operator) for g in groups]
     for gst in group_states:
         gst.attach_model()
 
@@ -1530,29 +1662,42 @@ def run_inference(verbose=False, operator="default"):
 #  CALIBRATION MODE
 # ══════════════════════════════════════════════════════════════════════
 
-def run_calibrate(seconds):
-    """Record ``seconds`` of rest-state EMG, compute 3·std per channel,
-    save to ``models/noise_thresholds.json``.
+def run_calibrate(seconds, operator="default"):
+    """Record ``seconds`` of rest-state EMG, compute per-muscle envelope
+    floor, write the operator's noise-threshold file.
 
-    ⚠ DIAGNOSTIC ONLY — this file is NOT read by the runtime DSP.
-    Your trained model already has rest-state characteristics baked in
-    from the AI team's ``proccess.py`` pipeline (see
-    ``dynamic_noise_thresholds.json`` generated at training time).
-    Running this calibration produces a SECOND file with potentially
-    different values that no code path consumes — keeping it around
-    just confuses future operators.
+    File written:
+        models/dynamic_noise_thresholds_<operator>.json   (when operator != default)
+        models/dynamic_noise_thresholds_default.json      (when operator == default)
 
-    The function still works because it's useful for one purpose:
-    sanity-checking your electrode setup. If ``thr`` values come back
-    > 100, your contact is noisy and you should fix that before
-    running ``./launch.sh tui`` for real."""
-    print("[CAL] ⚠ This calibration is DIAGNOSTIC ONLY.", flush=True)
-    print("[CAL]   Output is NOT consumed by the runtime DSP.",  flush=True)
-    print("[CAL]   Use it to check electrode contact quality.",  flush=True)
-    print("[CAL]   Values >100 = noisy contact; reseat electrodes.", flush=True)
-    print("[CAL]   To delete the stale file: rm models/noise_thresholds.json",
-          flush=True)
-    print("",     flush=True)
+    The canonical models/dynamic_noise_thresholds.json — Aleyna's
+    training-time calibration — is NEVER overwritten by this command,
+    by design. At runtime _load_dynamic_thresholds(<operator>) prefers
+    the operator-specific file but falls back to Aleyna's, so a new
+    operator can record their own profile without touching the default.
+
+    The threshold value uses the SAME quantity the runtime gate checks
+    against in _features_and_inference: ``mean(|envelope|)`` of the
+    cleaned, decimated, low-passed signal. Old code stored ``3*std(cleaned)``
+    which is in different units than what the gate compares — leftover
+    from when this file was diagnostic-only. Switching now yields a
+    threshold that's directly comparable to the runtime env_means,
+    matching the units of Aleyna's s1/s2/s3 values.
+
+    Use a generous safety factor (mean + 3*std of |envelope|) so the
+    threshold sits clearly ABOVE typical rest noise — anything below
+    that is genuinely quiet.
+    """
+    out_path = _dynamic_thr_path(operator)
+    # Guard: never overwrite Aleyna's canonical file. If the operator
+    # name reduces to "default" we still write to a distinct file.
+    if out_path == DYNAMIC_THR_DEFAULT_PATH:
+        out_path = os.path.join(MODEL_DIR,
+                                "dynamic_noise_thresholds_default.json")
+
+    print(f"[CAL] operator={operator}  output={out_path}", flush=True)
+    print(f"[CAL] canonical Aleyna file is left untouched.", flush=True)
+
     groups, _ = load_gestures()
     active_channels = groups[0]["emg_channels"] if groups else [0, 1, 2]
     num_ch          = len(active_channels)
@@ -1579,21 +1724,39 @@ def run_calibrate(seconds):
     for bi, label in enumerate(labels):
         sig_arr = np.array(bufs[bi], dtype=np.float64)
         if len(sig_arr) < WINDOW_HI:
-            thresholds[label] = 50.0
+            thresholds[label] = 50.0       # safe fallback if no data
             continue
+        # Mirror _features_and_inference's pipeline so the threshold
+        # has the SAME units as the env_means it will be compared
+        # against at inference time.
         sig_lo   = decimate(sig_arr, DECIMATE_FACTOR, zero_phase=True)
         centered = sig_lo - np.mean(sig_lo)
         bp       = butter_bandpass(centered, 20.0, 450.0, TARGET_FS_HZ)
-        cleaned  = notch_filter(bp, 50.0, TARGET_FS_HZ)
-        thr      = float(np.std(cleaned) * 3.0)
+        n50      = notch_filter(bp,   50.0,  TARGET_FS_HZ)
+        n100     = notch_filter(n50,  100.0, TARGET_FS_HZ)
+        n200     = notch_filter(n100, 200.0, TARGET_FS_HZ)
+        env      = envelope(n200, TARGET_FS_HZ, cutoff=3.0)
+        env_abs  = np.abs(env)
+        # threshold = upper bound of rest envelope; mean + 3 std
+        # gives a one-sided ~99.7% rest gate, well-clear of typical
+        # rest noise but below any genuine muscle activation.
+        thr      = float(np.mean(env_abs) + 3.0 * np.std(env_abs))
         thresholds[label] = thr
         print(f"[CAL] {label} (ch{active_channels[bi]}): "
-              f"std={np.std(cleaned):.2f} thr={thr:.2f}", flush=True)
+              f"env_mean={np.mean(env_abs):.2f} "
+              f"env_std={np.std(env_abs):.2f} thr={thr:.2f}",
+              flush=True)
 
     os.makedirs(MODEL_DIR, exist_ok=True)
-    with open(THRESHOLDS_PATH, 'w') as f:
+    with open(out_path, 'w') as f:
         json.dump(thresholds, f, indent=4)
-    print(f"[CAL] saved: {THRESHOLDS_PATH}", flush=True)
+    print(f"[CAL] saved: {out_path}", flush=True)
+    print(f"[CAL] to use it:  ./launch.sh tui --operator {operator}", flush=True)
+    # Drop the in-process cache so a subsequent run_inference picks up
+    # the freshly-written values without restarting the DSP.
+    global _dyn_thresh, _dyn_thresh_op
+    _dyn_thresh    = None
+    _dyn_thresh_op = None
     ipc.close()
     return 0
 
@@ -1605,14 +1768,25 @@ def run_calibrate(seconds):
 def main():
     ap = argparse.ArgumentParser(description="CPCU DSP + ML pipeline")
     ap.add_argument('--calibrate', type=float, metavar='SEC',
-                    help="Record N seconds of rest, save thresholds, exit")
+                    help="Record N seconds of rest, write the operator's "
+                         "rest-noise file, exit. Aleyna's canonical "
+                         "dynamic_noise_thresholds.json is never touched.")
     ap.add_argument('--verbose', action='store_true')
-    ap.add_argument('--operator', default='default',
-                    help="Load velocity_map_<name>.json profile")
+    # Operator defaults to the CPCU_OPERATOR env var if set (launch.sh
+    # exports it for every command), then to "default" (Aleyna's
+    # noise file + bare velocity_map.json). This is what wires
+    # `./launch.sh tui --operator alice` into the noise-floor lookup
+    # — the kernel exec'd cpcu_dsp.py without --operator, but the env
+    # var carries through fork() so we still see the choice.
+    ap.add_argument('--operator',
+                    default=os.environ.get('CPCU_OPERATOR', 'default'),
+                    help="Operator profile name. Loads "
+                         "velocity_map_<name>.json and "
+                         "dynamic_noise_thresholds_<name>.json when present.")
     args = ap.parse_args()
 
     if args.calibrate is not None:
-        return run_calibrate(args.calibrate)
+        return run_calibrate(args.calibrate, operator=args.operator)
     return run_inference(verbose=args.verbose, operator=args.operator)
 
 

@@ -2,19 +2,80 @@
  *  @file   cpcu_ws.c
  *  @brief  WebSocket bridge — read-only JSON dashboard over HTTP.
  *
- *  Maps /dev/shm/cpcu_ipc as a consumer (same as cpcu_tui), serves a
- *  single-page browser dashboard via Mongoose embedded HTTP/WS server.
+ *  ROLE
+ *    Third reader of /dev/shm/cpcu_ipc (after cpcu_io and cpcu_dsp).
+ *    Maps the SHM read-only, walks the IPC regions on a 10 Hz state
+ *    cadence and a 20 Hz wave cadence, serialises each snapshot as
+ *    JSON, and broadcasts to every connected WebSocket. Serves the
+ *    static dashboard (index.html + assets) over HTTP on the same
+ *    listener. Runs on Core 0 at default priority — explicitly NOT
+ *    realtime, so a hung browser or slow LAN can never preempt the
+ *    radio/DSP loops.
  *
- *  Operation:
- *    1. Parse --bind URL and --static directory from command line.
- *    2. Open IPC shared memory (read-only consumer).
- *    3. Listen on HTTP; upgrade /ws path to WebSocket.
- *    4. Broadcast JSON state frame at 10 Hz (system status, gesture, diagnostics).
- *    5. Broadcast JSON wave frame at 20 Hz (raw envelope + filtered + raw-full FFT data).
- *    6. Serve static files (index.html) from the configured directory.
+ *    There is NO command channel back into the system. The browser
+ *    cannot enter edit mode, drive servos, or change config; the
+ *    JSON is one-way. To tune values, use the TUI's live editor.
  *
- *  No command channel — browsers cannot affect the running system.
- *  Runs on Core 0 at default priority (not real-time).
+ *  DEPENDENCIES — what this file READS / INCLUDES
+ *    cpcu_ipc.h                : Full IPC layout (ControlBlock, sensor
+ *                                ring, MotorCommand, Diagnostics,
+ *                                DSPExport, RuntimeConfig,
+ *                                ToolPresence, DspFiltered). The
+ *                                serializer is hand-written against
+ *                                these struct layouts — any field
+ *                                addition or struct reorder in the
+ *                                header requires this file to follow.
+ *    cpcu_json.h / .c          : Stream-style JSON writer (no malloc,
+ *                                caller-supplied buffer). Every JSON
+ *                                frame is built through this API.
+ *    wireless_packet.h         : WL_NUM_CHANNELS, WL_SAMPLES_PER_PACKET
+ *                                — controls the wave-frame channel
+ *                                counts and the raw-full ring stride.
+ *    mongoose (vendored)       : HTTP/WS server runtime. When the
+ *                                CMake build can't find it, falls back
+ *                                to mongoose_stub.h: compiles, but the
+ *                                binary refuses to serve and exits
+ *                                with a "stub mode" message.
+ *    /tmp/cpcu_group_state.txt : Produced by cpcu_dsp.py every window.
+ *                                Tab-separated lines parsed here and
+ *                                surfaced as the state frame's
+ *                                `groups[]` array. If the file is
+ *                                missing the array is empty and the
+ *                                frontend shows "waiting for DSP".
+ *
+ *  DOWNSTREAM — what reads what this file PRODUCES
+ *    web/static/index.html     : The shipped browser client. Every
+ *                                field name in build_state_frame() /
+ *                                build_wave_frame() is referenced by
+ *                                a JS path in index.html — rename a
+ *                                key here and a UI element silently
+ *                                stops updating there. Schema lives
+ *                                in WEB_DASHBOARD.md §4.
+ *    External viewers          : Any browser/script on the LAN can
+ *                                speak the same WebSocket protocol.
+ *                                We make no compatibility promises
+ *                                beyond what's documented in §4.
+ *
+ *  CROSS-MODULE EFFECTS (what changes in OTHER files force changes here)
+ *    cpcu_ipc.h schema bump    : if IPC_VERSION moves or a struct
+ *                                grows, rebuild. The state frame's
+ *                                "bridge.ipc_version" tells the
+ *                                browser which mapping it's reading.
+ *    cpcu_dsp.py group digest  : changing the tab-separated layout of
+ *                                /tmp/cpcu_group_state.txt forces a
+ *                                parser update in build_state_frame().
+ *    IPC_DspFiltered cadence   : if cpcu_dsp.py changes the window /
+ *                                stride that drives the publish rate,
+ *                                only the documented filtered_fs_hz
+ *                                / filtered_n_samples need to follow
+ *                                in the wave frame (no code change
+ *                                here — values are read from the
+ *                                struct).
+ *    PCA9685 ToolPresence map  : if a new test bench claims a slot
+ *                                in IPC_ToolPresence, add a payload
+ *                                decoder in build_state_frame()'s
+ *                                tools[] loop; otherwise the slot
+ *                                shows up with raw bytes only.
  */
 
 #include "cpcu_ipc.h"
@@ -229,6 +290,36 @@ static void build_state_frame(void)
             jw_arr_end(&jw);
             jw_kv_int(&jw, "gesture_id", (long long)gid);
             jw_kv_int(&jw, "confidence_pct", (long long)cpct);
+        jw_obj_end(&jw);
+    }
+
+    /* --- live runtime config (servo limits + bias) ---
+     *
+     * cpcu_kernel publishes IPC_RuntimeConfig from runtime.json (with
+     * a seqlock on `magic` = IPC_CFG_VALID_MAGIC once populated). The
+     * dashboard's SV[] array used to hardcode the same limits in JS,
+     * which silently drifted whenever an operator edited runtime.json
+     * via the TUI live editor. Forwarding the limits here lets
+     * index.html rescale slider bars against the actual values
+     * cpcu_io is clamping to — single source of truth.
+     *
+     * If the kernel hasn't populated the block yet (magic != valid),
+     * we omit the object and the frontend falls back to its
+     * compile-time defaults. */
+    if(g_ipc.config && g_ipc.config->magic == IPC_CFG_VALID_MAGIC)
+    {
+        jw_kv_obj_begin(&jw, "runtime_config");
+            jw_kv_arr_begin(&jw, "servo_min_us");
+                for(int i = 0; i < IPC_CFG_NUM_SERVOS; i++)
+                    jw_int(&jw, (long long)g_ipc.config->servo_min_us[i]);
+            jw_arr_end(&jw);
+            jw_kv_arr_begin(&jw, "servo_max_us");
+                for(int i = 0; i < IPC_CFG_NUM_SERVOS; i++)
+                    jw_int(&jw, (long long)g_ipc.config->servo_max_us[i]);
+            jw_arr_end(&jw);
+            jw_kv_int(&jw, "config_seq",
+                      (long long)atomic_load_explicit(&g_ipc.config->config_seq,
+                                                      memory_order_acquire));
         jw_obj_end(&jw);
     }
 
@@ -565,11 +656,19 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
         {
             mg_ws_upgrade(c, hm, NULL);
             /* Welcome frame so the client knows it's connected even
-             * before the next periodic broadcast fires. */
-            const char *welcome =
+             * before the next periodic broadcast fires. We emit the
+             * live IPC_VERSION (read from cpcu_ipc.h at compile time)
+             * rather than a separate hand-maintained version string —
+             * that way frontend compatibility checks key off ONE
+             * source of truth that gets bumped automatically when
+             * the IPC schema changes. */
+            char welcome[96];
+            int wn = snprintf(welcome, sizeof(welcome),
                 "{\"ch\":\"hello\",\"server\":\"cpcu_ws\","
-                "\"version\":\"v2.4.0\",\"ipc_version\":518}";
-            mg_ws_send(c, welcome, strlen(welcome), WEBSOCKET_OP_TEXT);
+                "\"ipc_version\":%u}",
+                (unsigned)IPC_VERSION);
+            if(wn > 0 && (size_t)wn < sizeof(welcome))
+                mg_ws_send(c, welcome, (size_t)wn, WEBSOCKET_OP_TEXT);
         }
         else
         {
@@ -633,10 +732,16 @@ static void parse_args(int argc, char **argv)
         }
         else if(strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0)
         {
+            /* IPC_VERSION (from cpcu_ipc.h) is the binding contract
+             * between this bridge and every other process that touches
+             * /dev/shm/cpcu_ipc. Print it instead of a hand-maintained
+             * "v2.x.y" string so version drift can't sneak in. */
 #ifdef CPCU_WS_HAVE_MONGOOSE
-            fprintf(stdout, "cpcu_ws v2.4.0 (Mongoose bridge)\n");
+            fprintf(stdout, "cpcu_ws (mongoose backend)  IPC_VERSION=0x%04x\n",
+                    (unsigned)IPC_VERSION);
 #else
-            fprintf(stdout, "cpcu_ws v2.4.0 (BUILT WITHOUT MONGOOSE — stub)\n");
+            fprintf(stdout, "cpcu_ws (BUILT WITHOUT MONGOOSE — stub)  IPC_VERSION=0x%04x\n",
+                    (unsigned)IPC_VERSION);
 #endif
             exit(0);
         }
@@ -665,7 +770,7 @@ int main(int argc, char **argv)
 
     fprintf(stderr,
         "════════════════════════════════════════════════════════════\n"
-        "  CPCU Dashboard — WebSocket bridge (cpcu_ws v2.4.0)\n"
+        "  CPCU Dashboard — WebSocket bridge\n"
         "════════════════════════════════════════════════════════════\n"
         "  bind     : %s\n"
         "  static   : %s\n",
@@ -765,9 +870,8 @@ int main(int argc, char **argv)
     }
     fprintf(stderr,
         "  Endpoints:\n"
-        "    /              main dashboard\n"
-        "    /api/config    current gestures.json (categorized)\n"
-        "    /ws            WebSocket stream (live data)\n"
+        "    /              main dashboard (static index.html)\n"
+        "    /ws            WebSocket stream (live JSON frames)\n"
         "════════════════════════════════════════════════════════════\n\n");
 
     signal(SIGINT,  on_sig);

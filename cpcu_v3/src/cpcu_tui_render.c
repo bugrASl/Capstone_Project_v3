@@ -1,28 +1,60 @@
 /**
- *  @file       cpcu_tui_render.c
- *  @brief      TUI render layer — drawing primitives, helpers, page draws.
- *  @author     bugrASl
- *  @date       April 2026
- *  @version    3.4 (multi-file split)
+ *  @file   cpcu_tui_render.c
+ *  @brief  TUI render layer — drawing primitives, page renderers, footer.
  *
- *  Owns all interaction with ncurses and the layout globals
- *  (g_term_w/h, g_tui_w, g_col_r, g_bar_w, g_slider_w). Reads — never
- *  writes — the data buffers maintained by cpcu_tui_data.c (sensor
- *  ring waveform buffer, dataset capture state, demo synthesis state)
- *  and the main-module state (current_page, demo_mode).
+ *  ROLE
+ *    Owns all interaction with ncurses and the layout globals
+ *    (g_term_w/h, g_tui_w, g_col_r, g_bar_w, g_slider_w). Reads — never
+ *    writes — the data buffers maintained by cpcu_tui_data.c (sensor
+ *    ring waveform buffer, dataset capture state, demo synthesis
+ *    state) and the main-module state (current_page, demo_mode) from
+ *    cpcu_tui.c. Reads the IPC regions directly via the IPC_Context
+ *    passed in by every draw_page_* function.
  *
- *  Split structure:
- *      §1 Layout & shared constants (g_term_*, SERVO_NAMES, etc.)
- *      §2 State→string + signal helpers (state_str, batt_str, ZCR, RMS)
- *      §3 Drawing primitives (draw_lv, draw_bar, draw_slider, draw_section,
- *         draw_hline, now_ms)
- *      §4 Tab-bar + footer (draw_header, draw_footer)
- *      §5 Page renderers (one block per page)
- *      §6 Waveform line-trace (draw_waveform — used by Page 4)
+ *  DEPENDENCIES — what this file READS
+ *    cpcu_tui.h          : Shared types (Page enum, layout globals,
+ *                          DemoFault, WAVE_BUF_SIZE, latency budget
+ *                          constants TUI_LAT_*).
+ *    cpcu_tui_editor.h   : ED_Render hook on the CONFIG page when
+ *                          the edit-mode handshake has completed.
+ *    cpcu_ipc.h          : All IPC region structs — read live.
+ *    /tmp/cpcu_servo_names.txt    : Optional file dropped by
+ *                                   cpcu_dsp.py; if present its names
+ *                                   override the SERVO_NAMES fallback.
+ *    /tmp/cpcu_group_state.txt    : Per-window classifier digest from
+ *                                   cpcu_dsp.py; parsed for the DSP
+ *                                   page's per-group view.
+ *    /tmp/cpcu_gestures_digest.txt: Pre-formatted gestures.json digest
+ *                                   from cpcu_dsp.py; printed verbatim
+ *                                   on the CONFIG page.
+ *    /tmp/cpcu_smoother_config.txt: Per-servo motion profile written
+ *                                   by launch.sh's preflight; rendered
+ *                                   on the CONFIG page.
+ *    /tmp/cpcu_ws_active.txt      : Web dashboard URL from launch.sh.
+ *
+ *  DOWNSTREAM
+ *    cpcu_tui.c          : Calls draw_page_*, draw_header, draw_footer
+ *                          from the main loop. Also reads the
+ *                          SERVO_NAMES / CLS_NAMES tables and the
+ *                          DATASET_LABEL_COUNT macro (declared in
+ *                          cpcu_tui.h, defined here).
+ *
+ *  CROSS-MODULE EFFECTS
+ *    - Reduce/extend CLS_NAMES → also update DATASET_LABEL_COUNT in
+ *      cpcu_tui.h; the LEFT/RIGHT cycler in cpcu_tui.c uses that as
+ *      its modulus.
+ *    - Servo bar scales prefer ipc->config->servo_*_us[] when the
+ *      kernel has populated IPC_RuntimeConfig; the helpers
+ *      tui_servo_min_us / tui_servo_max_us fall back to the hardcoded
+ *      arrays only until the first valid config arrives, so a live
+ *      edit through the CONFIG editor rescales bars within one frame.
+ *    - The latency table mirrors TUI_LAT_*_US constants in cpcu_tui.h
+ *      which must match cpcu_dsp.py's LAT_* set. Drift = misleading
+ *      totals.
  */
 
 #include "cpcu_tui.h"
-#include "cpcu_tui_editor.h"        /* v2.3.8 — ED_Render */
+#include "cpcu_tui_editor.h"        /* ED_Render */
 
 #include <ctype.h>
 #include <math.h>
@@ -68,21 +100,58 @@ void layout_update(void)
 
 /*============= §1 SERVO + CLASS NAMES (definitions) =======================================*/
 
-/* Servo display names. The fallback values below are used until
- * cpcu_dsp.py drops /tmp/cpcu_servo_names.txt on its first start;
- * tui_reload_servo_names() reads that file and rewrites this array
- * so the TUI shows whatever names are in gestures.json (Base, Elbow,
- * Forearm, Wrist1, Wrist2, Gripper — sorted by pca_ch). */
+/* Servo display names. These are the FALLBACK values rendered before
+ * cpcu_dsp.py drops /tmp/cpcu_servo_names.txt on first start;
+ * tui_reload_servo_names() then reads that file and rewrites this
+ * array with whatever's in gestures.json (sorted by pca_ch).
+ *
+ * The fallback values below match gestures.json's stock servo_channels
+ * block — Base, Elbow, Forearm, Wrist1, Wrist2, Gripper — so the TUI
+ * shows the right names even in the brief window before DSP starts.
+ * (Used to be Base/Upper/Last/Jnt-1/Jnt-2/Grip — left over from an
+ * older gestures.json that no longer matches any reality.) */
 #define TUI_SERVO_NAME_MAX 16
 static char     g_servo_name_buf[6][TUI_SERVO_NAME_MAX] = {
-    "Base", "Upper", "Last", "Jnt-1", "Jnt-2", "Grip"
+    "Base", "Elbow", "Forearm", "Wrist1", "Wrist2", "Gripper"
 };
 const char     *SERVO_NAMES[]   =   {
     g_servo_name_buf[0], g_servo_name_buf[1], g_servo_name_buf[2],
     g_servo_name_buf[3], g_servo_name_buf[4], g_servo_name_buf[5]
 };
+/* Per-servo PWM limits.
+ *
+ * The hardcoded arrays below are the COMPILE-TIME FALLBACK matching
+ * stock gestures.json. At runtime, cpcu_kernel populates
+ * IPC_RuntimeConfig::servo_{min,max}_us[] from runtime.json (or
+ * gestures.json if runtime.json is missing). The helpers
+ * `tui_servo_min_us` / `tui_servo_max_us` below prefer the IPC value
+ * when the config block is mapped and has a valid magic — that way a
+ * live edit through the CONFIG-page editor immediately rescales the
+ * draw_slider bars without a rebuild. Demo mode (no kernel) falls
+ * straight through to the constants. */
 const uint16_t  SERVO_MIN[]     =   {  498, 1074, 1074, 1001, 1001,  976 };
 const uint16_t  SERVO_MAX[]     =   { 2500, 1953, 1953, 2002, 2002, 1733 };
+
+static inline uint16_t tui_servo_min_us(const IPC_Context *ipc, int i)
+{
+    if(ipc && ipc->config
+       && ipc->config->magic == IPC_CFG_VALID_MAGIC
+       && i >= 0 && i < IPC_CFG_NUM_SERVOS
+       && ipc->config->servo_min_us[i] > 0)
+        return ipc->config->servo_min_us[i];
+    return (i >= 0 && i < (int)(sizeof(SERVO_MIN)/sizeof(SERVO_MIN[0])))
+         ? SERVO_MIN[i] : 1000;
+}
+static inline uint16_t tui_servo_max_us(const IPC_Context *ipc, int i)
+{
+    if(ipc && ipc->config
+       && ipc->config->magic == IPC_CFG_VALID_MAGIC
+       && i >= 0 && i < IPC_CFG_NUM_SERVOS
+       && ipc->config->servo_max_us[i] > 0)
+        return ipc->config->servo_max_us[i];
+    return (i >= 0 && i < (int)(sizeof(SERVO_MAX)/sizeof(SERVO_MAX[0])))
+         ? SERVO_MAX[i] : 2000;
+}
 
 /* Re-read /tmp/cpcu_servo_names.txt — one servo name per line, sorted
  * by pca_ch. Idempotent and cheap; called on every page-draw of the
@@ -128,14 +197,21 @@ static void tui_reload_servo_names(void)
 }
 
 const char     *CLS_NAMES[]     =   {
-    /* Indices 0-3: model.classes_ order is scikit-learn alphabetical
-     * since RandomForestClassifier sorts string labels at fit time.
-     * Active model is models/arm.pkl (shared between right_arm and
-     * left_arm groups — same muscles, same classifier). */
-    "EXT",    "FLEX",   "HAND",   "REST",
-    /* Indices 4-9: extra labels available in the DATASET capture page
-     * for future multi-gesture training runs. Not used at inference. */
-    "A.BND<", "A.BND=", "A.BND>", "A.SLO",  "A.FST",  "BICEP"
+    /* Active model is models/arm.pkl, a sklearn RandomForestClassifier
+     * (200 trees) shared between the right_arm and left_arm groups —
+     * same muscles, same classifier, alphabetical class order:
+     *     0 = ext     1 = flex     2 = hand     3 = rest
+     * Used by:
+     *   (a) the Overview/DSP page confidence bars, indexed by the
+     *       num_classes-many slots of dsp_export.class_confidence[]
+     *   (b) the Dataset capture page's LEFT/RIGHT label cycler,
+     *       bounded by DATASET_LABEL_COUNT in cpcu_tui.h.
+     *
+     * If the trained model later gains more classes, EXTEND this array
+     * AND bump DATASET_LABEL_COUNT to match — the cycler uses that
+     * macro as the modulus, and the overview iterates up to
+     * IPC_MAX_CLASSES so the IPC buffer has room for up to 10. */
+    "EXT", "FLEX", "HAND", "REST"
 };
 
 const char *PAGE_TITLES[] = {
@@ -807,7 +883,9 @@ void draw_page_overview(int r, IPC_Context *ipc,
     for(int i = 0; i < IPC_NUM_SERVOS; i++)
     {
         mvprintw(r + i, 1, "S%d %-5s %4u ", i, SERVO_NAMES[i], servo[i]);
-        draw_slider(r + i, 16, servo[i], SERVO_MIN[i], SERVO_MAX[i], g_slider_w);
+        draw_slider(r + i, 16, servo[i],
+                    tui_servo_min_us(ipc, i), tui_servo_max_us(ipc, i),
+                    g_slider_w);
     }
     // draw_lv(r,     g_col_r, "Voltage:",   batt_v < 3.0f ? CP_BAD : CP_GOOD, "%.2f V  (pack)", batt_v);
     // draw_lv(r + 1, g_col_r, "Raw ADC:",   CP_CYAN, "%u  (12-bit, 0..4095)", latest.vbat_raw);
@@ -821,7 +899,7 @@ void draw_page_overview(int r, IPC_Context *ipc,
     draw_section(r, 1, "DSP PIPELINE");
     draw_section(r, g_col_r, "INFERENCE");
     r++;
-    draw_lv(r, 1,       "DSP windows:", CP_CYAN, "%u  (400-sample FFTs)", dsp_batch);
+    draw_lv(r, 1,       "DSP windows:", CP_CYAN, "%u  (200-sample feature windows)", dsp_batch);
     draw_lv(r, g_col_r, "Inferences:",  CP_CYAN, "%u  (ML predictions)", dsp_inf);
     r++;
     draw_lv(r, 1,       "Max latency:", dsp_lat > 50000 ? CP_WARN : CP_GOOD, "%u us  (worst batch)", dsp_lat);
@@ -1066,7 +1144,13 @@ void draw_page_overview(int r, IPC_Context *ipc,
         r++;
 
         uint8_t nc = ipc->dsp_export->num_classes;
-        if(nc > IPC_MAX_CLASSES) nc = IPC_MAX_CLASSES;
+        if(nc > IPC_MAX_CLASSES)     nc = IPC_MAX_CLASSES;
+        /* Also clamp to the static CLS_NAMES table: a future model with
+         * more than DATASET_LABEL_COUNT classes would otherwise read
+         * past the end of the names array and segfault. Display gets
+         * truncated at that bound; the warning lives in CLS_NAMES'
+         * docblock. */
+        if(nc > DATASET_LABEL_COUNT) nc = DATASET_LABEL_COUNT;
         for(int c = 0; c < (int)nc; c++)
         {
             int col = (c < 5) ? 1 : g_col_r;
@@ -1313,7 +1397,8 @@ void draw_page_radio(int r, IPC_Context *ipc,
 
     /* Row 6: ADC samples for all 8 channels — single line each side */
     attron(COLOR_PAIR(CP_DIM));
-    mvprintw(r, 1, "ADC samples (raw 0..4095, latest of 4 per packet):");
+    mvprintw(r, 1, "ADC samples (raw 0..4095, sample 0 of %d per packet):",
+             WL_SAMPLES_PER_PACKET);
     attroff(COLOR_PAIR(CP_DIM));
     r++;
     mvprintw(r, 1, "ch0..3:  ");
@@ -1411,15 +1496,15 @@ void draw_page_dsp(int r, IPC_Context *ipc)
     draw_lv(r, 1,       "DSP ready:",   dsp_rdy ? CP_GOOD : CP_BAD, "%s", dsp_rdy ? "YES" : "NO");
     draw_lv(r, g_col_r, "Model:",       CP_CYAN, "RandomForest");
     r++;
-    draw_lv(r, 1,       "DSP windows:", CP_CYAN, "%u  (%u/s, 400-sample FFTs)", dsp_batch, batch_rate);
-    draw_lv(r, g_col_r, "Inferences:",  CP_CYAN, "%u  (%u/s, ML preds)", dsp_inf, inf_rate);
+    draw_lv(r, 1,       "DSP windows:", CP_CYAN, "%u  (%u/s, 200-sample feature windows)", dsp_batch, batch_rate);
+    draw_lv(r, g_col_r, "Inferences:",  CP_CYAN, "%u  (%u/s, RF preds)", dsp_inf, inf_rate);
     r++;
     draw_lv(r, 1,       "Max latency:", dsp_lat > 50000 ? CP_WARN : CP_GOOD, "%u us  (worst batch)", dsp_lat);
-    draw_lv(r, g_col_r, "Window:",      CP_CYAN, "400 samples  (@2 kHz = 200 ms)");
+    draw_lv(r, g_col_r, "Window:",      CP_CYAN, "200 samples  (WINDOW_HI in cpcu_dsp.py)");
     r++;
     draw_lv(r, 1,       "Ring fill:",   ring_fill > 100 ? CP_WARN : CP_GOOD,
             "%u / %u  (IPC samples)", ring_fill, IPC_SENSOR_RING_SIZE);
-    draw_lv(r, g_col_r, "Stride:",      CP_CYAN, "200 samples  (50 %% overlap)");
+    draw_lv(r, g_col_r, "Stride:",      CP_CYAN, "100 samples  (50%% overlap)");
     r++;
     draw_lv(r, 1,       "Underflows:",  dsp_under > 0 ? CP_WARN : CP_GOOD, "%u  (ring-empty events)", dsp_under);
     draw_lv(r, g_col_r, "Export rate:",
@@ -1753,7 +1838,8 @@ void draw_page_dsp(int r, IPC_Context *ipc)
         int col = (i < 3) ? 1 : g_col_r;
         int row = r + (i % 3);
         mvprintw(row, col, "S%d %-5s ", i, SERVO_NAMES[i]);
-        draw_slider(row, col + 10, servo[i], SERVO_MIN[i], SERVO_MAX[i], 14);
+        draw_slider(row, col + 10, servo[i],
+                    tui_servo_min_us(ipc, i), tui_servo_max_us(ipc, i), 14);
         printw(" %4u us", servo[i]);
     }
 }
@@ -1992,95 +2078,12 @@ void draw_page_health(int r, IPC_Context *ipc,
     }
     r++;
 
-    /*---- LIVE SYS-REQ COMPLIANCE (below subsystem rows) ----*/
-    if(r + 14 < g_term_h - 3)   /* only draw if terminal is tall enough */
-    {
-        draw_hline(r, 0, g_tui_w);
-        r++;
-        attron(A_BOLD);
-        mvprintw(r, 1, "SYSTEM REQUIREMENTS (live):");
-        attroff(A_BOLD);
-
-        int sr_pass = 0, sr_fail = 0;
-        int sr_col = 32;
-
-        #define SYS_REQ(id, name, ok, detail) do {             r++;             int _cp = (ok) ? CP_GOOD : CP_BAD;             mvprintw(r, 2, "%-10s %-20s", (id), (name));             attron(COLOR_PAIR(_cp) | A_BOLD);             printw("[%s]", (ok) ? "PASS" : "FAIL");             attroff(COLOR_PAIR(_cp) | A_BOLD);             attron(COLOR_PAIR(CP_DIM));             printw("  %s", (detail));             attroff(COLOR_PAIR(CP_DIM));             if(ok) sr_pass++; else sr_fail++;         } while(0)
-
-        /* Compute metrics from already-loaded telemetry.
-         *
-         * The old formula was a rough hand-wave:
-         *   est = dsp_max_latency/1000 + 200 (observation window) + 20 (servo)
-         * which double-counted parts of the inference window and ignored
-         * actual radio/I²C transport. Now that cpcu_dsp.py publishes a
-         * measured pkt→servo wall-time per tick (lat_pkt_us), the math
-         * becomes the real budget:
-         *
-         *   E2E = BSAU_const (ADC+wireless)            // datasheet
-         *       + CPCU_meas  (SPI+ring+DSP+smoother)    // pkt_to_servo_us
-         *       + SERVO_const (mechanical)              // datasheet
-         *
-         * If lat_pkt_us is 0 (DSP hasn't published yet) we keep the old
-         * rough estimate so the test runs in pre-DSP demo mode too. */
-        uint32_t lat_pkt_us = tui_lat_pkt_to_servo_us(ipc->dsp_export);
-        float est_latency_ms;
-        char  lat_detail[80];
-        if(lat_pkt_us > 0)
-        {
-            /* lat_pkt_us is measured from cpcu_io's rx_time_us stamp (taken
-             * BEFORE the NRF SPI read) through to cpcu_dsp.py writing the
-             * motor command into IPC. That covers SPI_UNPACK + ring dwell
-             * + DSP compute. The smoother + I²C path is separate (cpcu_io
-             * reads motor_cmd then drives the PCA9685 on a 50 Hz tick) so
-             * we must add it explicitly. */
-            uint32_t bsau_us  = TUI_LAT_ADC_PACK_US + TUI_LAT_WIRELESS_US;
-            uint32_t smth_us  = TUI_LAT_SMOOTHER_I2C_US;
-            uint32_t srvo_us  = TUI_LAT_SERVO_MECH_US;
-            uint32_t e2e_us   = bsau_us + lat_pkt_us + smth_us + srvo_us;
-            est_latency_ms    = e2e_us / 1000.0f;
-            snprintf(lat_detail, sizeof(lat_detail),
-                     "%.1f ms (BSAU %u + CPCU %u + smth %u + srv %u us)",
-                     est_latency_ms, bsau_us, lat_pkt_us, smth_us, srvo_us);
-        }
-        else
-        {
-            est_latency_ms = (float)dsp_lat / 1000.0f + 200.0f + 20.0f;
-            snprintf(lat_detail, sizeof(lat_detail),
-                     "%.0f ms (obs+inf+servo, no DSP measurement yet)",
-                     est_latency_ms);
-        }
-        float batt_req = 99.0f;  /* v3: battery bypassed */
-
-        char buf2[64], buf3[64], buf4[64], buf5[64], buf6[64], buf7[64];
-        snprintf(buf2, 64, "%.2f V", batt_req);
-        snprintf(buf3, 64, "%.3f %%", loss_rate * 100.0f);
-        snprintf(buf4, 64, "%u pkt/s", pkt_rate);
-        snprintf(buf5, 64, "%u Hz (2 samp/pkt)", pkt_rate * 2);
-        snprintf(buf6, 64, "%s", state_str(sys_state));
-        snprintf(buf7, 64, "%u entries", safe_ents);
-
-        SYS_REQ("SYS-REQ-01", "E2E latency <300ms",  est_latency_ms < 300, lat_detail);
-        SYS_REQ("SYS-REQ-03", "Battery >2.7V",       batt_req > 2.7f,      buf2);
-        SYS_REQ("SYS-REQ-04", "Pkt loss <1%%",        loss_rate < 0.01f,    buf3);
-        SYS_REQ("SYS-REQ-05", "Radio >900 pkt/s",    pkt_rate > 900,       buf4);
-        SYS_REQ("SYS-REQ-06", "Sample rate >=2kHz",   pkt_rate >= 950,      buf5);
-        SYS_REQ("SYS-REQ-08a","State = RUNNING",     sys_state == IPC_STATE_RUNNING, buf6);
-        SYS_REQ("SYS-REQ-08b","Zero SAFE entries",   safe_ents == 0,       buf7);
-
-        #undef SYS_REQ
-
-        r++;
-        attron(A_BOLD);
-        mvprintw(r, 2, "Result: ");
-        int vcp = sr_fail == 0 ? CP_GOOD : CP_BAD;
-        attron(COLOR_PAIR(vcp));
-        printw("%d PASS  %d FAIL", sr_pass, sr_fail);
-        if(sr_fail == 0) printw("  -- ALL REQUIREMENTS MET");
-        attroff(COLOR_PAIR(vcp) | A_BOLD);
-        r++;
-    }
-
-    /*---- Legend + reminder footer ----*/
-    /*---- LIVE SYSTEM REQUIREMENTS COMPLIANCE ----*/
+    /*---- LIVE SYSTEM REQUIREMENTS COMPLIANCE ----
+     *
+     * One unified SYS-REQ table rendered via the REQ_ROW macro below.
+     * (A second redundant block used to live here that only rendered
+     * on tall terminals — same content, fewer rows, looked like a bug
+     * to anyone running in a roomy tmux pane. Removed.) */
     draw_hline(r, 0, g_tui_w);
     r++;
     attron(A_BOLD);
@@ -2130,11 +2133,9 @@ void draw_page_health(int r, IPC_Context *ipc,
                 e2e_ms, dsp_lat / 1000.0f);
     }
 
-    /* ── SYS-REQ-03: Durability (battery + uptime) ── */
-    REQ_ROW("SYS-REQ-03a", "Battery (not sampled)",
-            1,  /* always pass — BSAU no longer samples battery */
-            "%s", "N/A (not sampled)");
-
+    /* ── SYS-REQ-03: Durability (uptime) ──
+     * v3 hardware doesn't sample battery at all, so the old SYS-REQ-03a
+     * "Battery (not sampled)" row was a fake PASS — removed. */
     {   /* Track uptime from first call */
         static uint64_t health_boot_ms = 0;
         if(health_boot_ms == 0) health_boot_ms = now_ms_wall();
@@ -2189,7 +2190,8 @@ void draw_page_health(int r, IPC_Context *ipc,
         uint16_t srv[IPC_NUM_SERVOS];
         memcpy(srv, (const void *)ipc->motor->servo_us, sizeof(srv));
         for(int s = 0; s < IPC_NUM_SERVOS; s++) {
-            if(srv[s] < SERVO_MIN[s] - 50 || srv[s] > SERVO_MAX[s] + 50)
+            if(srv[s] < (int)tui_servo_min_us(ipc, s) - 50
+            || srv[s] > (int)tui_servo_max_us(ipc, s) + 50)
                 servos_ok = 0;
         }
         REQ_ROW("SYS-REQ-08c", "Servo limits enforced",
@@ -2201,10 +2203,11 @@ void draw_page_health(int r, IPC_Context *ipc,
             (sys_state == IPC_STATE_RUNNING || sys_state == IPC_STATE_SAFE),
             "%s", sys_state == IPC_STATE_SAFE ? "ACTIVE (neutral)" : "armed");
 
-    uint32_t i2c_fail = 0; /* TODO: add io_i2c_errors to IPC_Diagnostics if not present */
-    REQ_ROW("SYS-REQ-08e", "I2C bus healthy",
-            (i2c_fail < 5),
-            "%u errors", i2c_fail);
+    /* SYS-REQ-08e ("I2C bus healthy") used to live here with a hardcoded
+     * i2c_fail=0 stub that always PASSED. IPC_Diagnostics has no I²C
+     * error counter for cpcu_io to populate, so the row was a fake
+     * green light — removed. Add it back once cpcu_io.c starts tracking
+     * PCA9685 write failures into a new diag field. */
 
     /* ── SYS-REQ-09: Joint Accuracy ── */
     REQ_ROW("SYS-REQ-09", "Servo update >= 40 Hz",
@@ -2704,12 +2707,22 @@ void draw_page_config(int r, IPC_Context *ipc)
     draw_lv(r, g_col_r, "Core 0:",        CP_CYAN, "Supervisor / TUI / logger");
     r++;
     draw_lv(r, 1,       "Samples/pkt:",   CP_CYAN, "%d  (packed 12-bit)", WL_SAMPLES_PER_PACKET);
-    draw_lv(r, g_col_r, "Cores 1-2:",     CP_CYAN, "Python DSP + RandomForest ML");
+    /* cpcu_dsp.py is spawned on cores 1-2 at SCHED_FIFO prio 80 by
+     * cpcu_kernel; classifier is RandomForest (200 trees) loaded from
+     * models/arm.pkl. */
+    draw_lv(r, g_col_r, "Cores 1-2:",     CP_CYAN, "Python DSP + RandomForest  (SCHED_FIFO prio 80)");
     r++;
     draw_lv(r, 1,       "Packet rate:",   CP_CYAN, "1000 pkt/s  (2 samples @ 2 kHz)");
-    draw_lv(r, g_col_r, "Core 3:",        CP_CYAN, "cpcu_io  (SCHED_FIFO prio 80)");
+    /* cpcu_io is the realtime BSAU radio + PCA9685 driver. cpcu_kernel
+     * spawns it on core 3 at SCHED_FIFO prio 90 — HIGHER than DSP so
+     * radio + smoother ticks never get preempted by a Python GIL hold. */
+    draw_lv(r, g_col_r, "Core 3:",        CP_CYAN, "cpcu_io  (SCHED_FIFO prio 90)");
     r++;
-    draw_lv(r, 1,       "Battery:",       CP_CYAN, "2S Li-ion pack + 2:1 divider");
+    /* v3 hardware: BSAU does not sample battery voltage; the safety
+     * FSM ignores vbat entirely (safety_ignore_battery=1 in IPC config).
+     * The Battery row used to claim "2S Li-ion pack + 2:1 divider" —
+     * never accurate for v3. Replaced with the actual radio link. */
+    draw_lv(r, 1,       "Wireless link:", CP_CYAN, "BSAU -> CPCU @ nRF24L01+");
     draw_lv(r, g_col_r, "Scheduler:",     CP_CYAN, "SCHED_FIFO realtime, mlockall");
     r += 2;
 
@@ -2720,10 +2733,24 @@ void draw_page_config(int r, IPC_Context *ipc)
     draw_section(r, g_col_r, "IPC (SHARED MEMORY)");
     r++;
 
+    /* Path size MUST equal IPC_SHM_SIZE in cpcu_ipc.h. Computing it
+     * here from the same component sizes avoids the stale "66240 B"
+     * literal that lived here before the 4096-entry ring fix and
+     * silently lied about the actual mapping. After ring-size fix:
+     *   192 + 64*4096 + 128 + 128 + 256 + 512 + 512 + 6432 = 270 304 B.
+     * The constant matches cpcu_ipc_bridge.py's SHM_TOTAL. */
     draw_lv(r, 1,       "Radio:",         CP_CYAN, "nRF24L01+  (2.4 GHz GFSK)");
-    draw_lv(r, g_col_r, "Path:",          CP_CYAN, "/dev/shm/cpcu_ipc  (66240 B)");
+    draw_lv(r, g_col_r, "Path:",          CP_CYAN, "/dev/shm/cpcu_ipc  (%zu B)",
+            (size_t)(sizeof(IPC_ControlBlock)
+                   + sizeof(IPC_SensorEntry)  * IPC_SENSOR_RING_SIZE
+                   + sizeof(IPC_MotorCommand)
+                   + sizeof(IPC_Diagnostics)
+                   + sizeof(IPC_DSPExport)
+                   + sizeof(IPC_RuntimeConfig)
+                   + sizeof(IPC_ToolPresence)
+                   + sizeof(IPC_DspFiltered)));
     r++;
-    draw_lv(r, 1,       "Channel:",       CP_CYAN, "76  (2.476 GHz, ISM)");
+    draw_lv(r, 1,       "Channel:",       CP_CYAN, "76  (2.476 GHz, ISM)  -- matches BSAU");
     draw_lv(r, g_col_r, "Layout:",        CP_CYAN, "ctrl + ring + motor + dsp_export");
     r++;
     draw_lv(r, 1,       "Address:",       CP_CYAN, "E7:E7:E7:E7:E7");
@@ -2747,18 +2774,25 @@ void draw_page_config(int r, IPC_Context *ipc)
     r++;
 
     draw_lv(r, 1,       "PWM driver:",    CP_CYAN, "PCA9685  (I2C @ 400 kHz, 50 Hz PWM)");
-    draw_lv(r, g_col_r, "Window:",        CP_CYAN, "400 samples  (= 200 ms @ 2 kHz)");
+    draw_lv(r, g_col_r, "Window:",        CP_CYAN, "200 samples  (WINDOW_HI in cpcu_dsp.py)");
     r++;
     draw_lv(r, 1,       "Servos:",        CP_CYAN, "%d × SG90  (1.0-2.0 ms pulse)", IPC_NUM_SERVOS);
-    draw_lv(r, g_col_r, "Stride:",        CP_CYAN, "200 samples  (50 %% overlap)");
+    draw_lv(r, g_col_r, "Stride:",        CP_CYAN, "100 samples  (50%% overlap)");
     r++;
-    draw_lv(r, 1,       "Slew limit:",    CP_CYAN, "3000 us/s joints, 1500 us/s gripper  (50%% mech max)");
+    /* SMOOTH_DEFAULT_VELOCITY in cpcu_smooth.h is 2000 us/s; the gripper
+     * slot is bumped down by runtime.json's smooth_velocity for slot 5.
+     * "3000 us/s" used to live here — left over from an earlier tuning
+     * pass; never matched the compile-time default. */
+    draw_lv(r, 1,       "Slew limit:",    CP_CYAN, "2000 us/s default  (per-servo via runtime.json)");
     draw_lv(r, g_col_r, "Feature extr:",  CP_CYAN, "RMS, var, WL, env_mean, MAV, ZC, SSC  (7/ch)");
     r++;
     draw_lv(r, 1,       "Safety cmd:",    CP_CYAN, "Servos → neutral (1500 us) on SAFE");
-    draw_lv(r, g_col_r, "Classifier:",    CP_CYAN, "RandomForest (scikit-learn)");
+    draw_lv(r, g_col_r, "Classifier:",    CP_CYAN, "RandomForest (sklearn, 200 trees)");
     r++;
-    draw_lv(r, 1,       "Safety thr:",    CP_CYAN, "Radio 750/1500 ms, Vbatt 2.7/3.0 V");
+    /* v3: vbatt thresholds removed — safety FSM skips the battery check
+     * entirely (safety_ignore_battery=1). Only radio-loss thresholds
+     * remain active. */
+    draw_lv(r, 1,       "Safety thr:",    CP_CYAN, "Radio loss 750 / 1500 ms (warn / SAFE)");
     draw_lv(r, g_col_r, "Classes:",       CP_CYAN, "4 active (ext, flex, hand, rest)");
     r += 2;
 
@@ -2832,13 +2866,13 @@ void draw_footer(int r)
     else
     {
         if(current_page == PAGE_WAVES)
-            mvprintw(r, 1, "1-7:pages  UP/DN:ch  TAB:detail  q:quit  10 Hz");
+            mvprintw(r, 1, "1-7:pages  UP/DN:ch  TAB:detail  q:quit  30 Hz");
         else if(current_page == PAGE_DATASET)
             mvprintw(r, 1, "1-7:pg  LEFT/RIGHT:label  s,SPACE:start/stop  r:cancel  t:raw/filt  q:quit");
         else if(current_page == PAGE_CONFIG)
             mvprintw(r, 1, "1-7:pages  e:edit  q:quit  |  Ctrl+S:save  ESC:cancel  r:revert");
         else
-            mvprintw(r, 1, "1-7:pages  q:quit  10 Hz  |  read-only (zero RT impact)");
+            mvprintw(r, 1, "1-7:pages  q:quit  30 Hz  |  read-only (zero RT impact)");
     }
     attroff(COLOR_PAIR(CP_DIM) | A_DIM);
 

@@ -1,6 +1,46 @@
 #!/bin/bash
-## calibrate.sh — rest noise + velocity preference (0-10 scale).
-## Invoked by: ./launch.sh calibrate [--operator <name>]
+# calibrate.sh — operator calibration: rest-noise floor + velocity profile.
+#
+# ROLE
+#   Thin wrapper around the Python pieces that produce per-operator
+#   calibration files. Two phases, gated by --rest-only / --vel-only:
+#     1. Rest-noise floor : invokes cpcu_dsp.py --calibrate to record
+#        N seconds of muscle rest, computes a per-channel envelope
+#        threshold (mean+3*std), and writes
+#        models/dynamic_noise_thresholds_<operator>.json.
+#     2. Velocity preference : invokes the Python velocity wizard to
+#        record the operator's preferred per-gesture speed on a
+#        0-10 scale, written to models/velocity_map_<operator>.json.
+#
+# DEPENDENCIES
+#   config/gestures.json     : source of channel + gesture metadata.
+#   python/cpcu_dsp.py       : performs the actual rest recording.
+#   python/cpcu_calibrate.py : performs the velocity preference flow.
+#   models/                  : output directory; never overwritten
+#                              files for "default" — those are
+#                              Aleyna's canonical set.
+#
+# DOWNSTREAM
+#   cpcu_dsp.py at runtime   : Loads the per-operator JSON files
+#                              when invoked with --operator NAME
+#                              ($CPCU_OPERATOR carries this through
+#                              launch.sh).
+#   cpcu_tui CONFIG page     : Surfaces which operator profile is
+#                              currently loaded (via the digest files
+#                              cpcu_dsp.py drops in /tmp).
+#
+# CROSS-MODULE EFFECTS
+#   - Changing the thresholds JSON schema requires matching parser
+#     updates in cpcu_dsp.py::_load_dynamic_thresholds.
+#   - The "default" operator name is a sentinel — calibrating it
+#     would overwrite the canonical files. The Python side refuses
+#     to write to those paths (re-tagged operator names are forced
+#     into _<name>.json suffixed paths).
+#
+# USAGE
+#   ./launch.sh calibrate [--operator NAME] [--rest-only | --vel-only]
+#                         [--duration SEC]
+
 set -euo pipefail
 
 REPO="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -45,10 +85,17 @@ echo -e "${C}══════════════════════�
 
 if [ ${DO_REST} -eq 1 ]; then
     echo
-    info "Phase 1: Rest calibration (${REST_SEC}s)"
+    info "Phase 1: Rest calibration (${REST_SEC}s) — operator '${OPERATOR}'"
     info "Relax your arm. Keep electrodes on."
+    info "  Writes models/dynamic_noise_thresholds_${OPERATOR}.json"
+    info "  (Aleyna's canonical dynamic_noise_thresholds.json is untouched.)"
     read -rp "  Press Enter to start... "
-    python3 "${PY_DIR}/cpcu_dsp.py" --calibrate "${REST_SEC}" 2>&1 | sed 's/^/  /'
+    # Pass --operator so cpcu_dsp.py writes the operator-specific
+    # noise file. Without this it would only see CPCU_OPERATOR via
+    # env, which works, but explicit is clearer for a per-task
+    # script.
+    python3 "${PY_DIR}/cpcu_dsp.py" --calibrate "${REST_SEC}" \
+                                    --operator "${OPERATOR}" 2>&1 | sed 's/^/  /'
     ok "Rest thresholds saved."
 fi
 

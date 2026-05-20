@@ -1,15 +1,48 @@
 #!/usr/bin/env python3
 """
-cpcu_ipc_bridge.py — Python interface to /dev/shm/cpcu_ipc
+cpcu_ipc_bridge.py — Python window into /dev/shm/cpcu_ipc.
 
-Mirrors cpcu_ipc.h current binary layout exactly.
-Uses mmap + struct for zero-copy shared memory access.
+ROLE
+    Mirrors cpcu_ipc.h's binary layout exactly, using mmap + struct
+    for zero-copy access from Python. cpcu_dsp.py drives 100% of its
+    IPC reads/writes through this module — sensor ring drains, motor
+    command writes, DSP export updates, runtime config reads,
+    dsp_filtered publishes.
 
-Author: bugrASl
-Date:   April 2026
+    The bridge is symmetric with cpcu_ipc.c on the C side: same
+    region sizes, same offsets, same atomic semantics.
+
+DEPENDENCIES
+    cpcu_ipc.h / cpcu_ipc.c : the C-side definitions this file mirrors.
+                              Any field reorder, region size change,
+                              or RING_SIZE bump on the C side MUST be
+                              followed here in the same commit.
+    /dev/shm/cpcu_ipc       : created by cpcu_kernel (IPC_Create) at
+                              startup; we open(O_RDWR) + mmap it.
+    Numpy                   : structured ndarray view over the ring
+                              for vectorised sample extraction.
+
+DOWNSTREAM
+    cpcu_dsp.py             : sole consumer in the Python tree. Both
+                              import and instantiation patterns are
+                              fixed there — adding a new method here
+                              is only useful if dsp grows code to
+                              use it.
+
+CROSS-MODULE EFFECTS
+    - RING_SIZE drift between this file and cpcu_ipc.h's
+      IPC_SENSOR_RING_SIZE silently corrupted the motor-cmd offset
+      before the SHM-size guard in __init__ was added. The guard now
+      raises a RuntimeError with both expected and actual sizes
+      printed when they don't match — so a future drift fails loudly
+      instead of producing garbage.
+    - Schema bumps in cpcu_ipc.h also bump IPC_VERSION; cpcu_ws.c
+      forwards that version to browsers in the hello frame, so a
+      misversioned bridge surfaces as "ipc_version mismatch" in the
+      dashboard rather than as silent data corruption.
 
 CRITICAL: If you change ANY struct size or field order in cpcu_ipc.h,
-          you MUST update the offsets here AND run test_ipc_offsets.py.
+          update the offsets here AND run test_ipc_bridge.py.
 """
 
 import mmap
@@ -26,7 +59,13 @@ IPC_SHM_PATH            =   "/dev/shm/cpcu_ipc"
 IPC_MAGIC               =   0x494E4654
 IPC_VERSION             =   0x0300          # IPC_ToolPresence + IPC_DspFiltered
 
-RING_SIZE               =   1024
+#  RING_SIZE *must* equal IPC_SENSOR_RING_SIZE in cpcu_ipc.h.
+#  This used to be 1024 here while the C side was 4096 — silently
+#  corrupted every downstream offset (motor cmd, diag, dsp_export),
+#  so DSP wrote motor commands into the middle of the ring and
+#  cpcu_io never saw a new command. The runtime SHM-size guard in
+#  IPCBridge.__init__ now catches this drift at startup.
+RING_SIZE               =   4096
 RING_MASK               =   RING_SIZE - 1
 NUM_CHANNELS            =   8
 SAMPLES_PER_PKT         =   2
@@ -43,24 +82,26 @@ SZ_ENTRY                =   64          # 1 cache line
 SZ_MOTOR                =   128         # 2 cache lines
 SZ_DIAG                 =   128         # 2 cache lines
 SZ_EXPORT               =   256         # 4 cache lines
-SZ_RING                 =   SZ_ENTRY * RING_SIZE    # 65536
+SZ_RING                 =   SZ_ENTRY * RING_SIZE    # 64 * 4096 = 262144
 SZ_CONFIG               =   512         # IPC_RuntimeConfig
 SZ_TOOL_PRESENCE        =   512         # 8 slots × 64 B
 SZ_DSP_FILTERED         =   6432        # 32 B header + 8 ch × 200 samples × 4 B
 
 # ══════════════════════════════════════════════════════════════════════
 #  SECTION OFFSETS — sequential in shared memory
+#  All comments below are post-fix values (RING_SIZE = 4096). Keeping
+#  them in sync with the C side is what test_ipc_bridge.py validates.
 # ══════════════════════════════════════════════════════════════════════
 
 OFF_CTRL                =   0
 OFF_RING                =   OFF_CTRL + SZ_CTRL                  # 192
-OFF_MOTOR               =   OFF_RING + SZ_RING                  # 65728
-OFF_DIAG                =   OFF_MOTOR + SZ_MOTOR                # 65856
-OFF_EXPORT              =   OFF_DIAG + SZ_DIAG                  # 65984
-OFF_CONFIG              =   OFF_EXPORT + SZ_EXPORT              # 66240
-OFF_TOOL_PRESENCE       =   OFF_CONFIG + SZ_CONFIG              # 66752
-OFF_DSP_FILTERED        =   OFF_TOOL_PRESENCE + SZ_TOOL_PRESENCE # 67264
-SHM_TOTAL               =   OFF_DSP_FILTERED + SZ_DSP_FILTERED   # 73696
+OFF_MOTOR               =   OFF_RING + SZ_RING                  # 262336
+OFF_DIAG                =   OFF_MOTOR + SZ_MOTOR                # 262464
+OFF_EXPORT              =   OFF_DIAG + SZ_DIAG                  # 262592
+OFF_CONFIG              =   OFF_EXPORT + SZ_EXPORT              # 262848
+OFF_TOOL_PRESENCE       =   OFF_CONFIG + SZ_CONFIG              # 263360
+OFF_DSP_FILTERED        =   OFF_TOOL_PRESENCE + SZ_TOOL_PRESENCE # 263872
+SHM_TOTAL               =   OFF_DSP_FILTERED + SZ_DSP_FILTERED   # 270304
 
 # ══════════════════════════════════════════════════════════════════════
 #  FIELD OFFSETS within IPC_ControlBlock (192 bytes)
@@ -213,6 +254,36 @@ class IPCBridge:
                 f"Is cpcu_kernel running? (creates /dev/shm/cpcu_ipc)"
             )
         fd                  =   os.open(path, os.O_RDWR)
+
+        # Sanity check: the SHM file size is set by C's ftruncate(IPC_SHM_SIZE)
+        # in cpcu_ipc.c::IPC_Create, so on-disk size is the source of truth.
+        # If our computed SHM_TOTAL is smaller, the C side has a region we
+        # can't see — non-fatal, warn. If it's LARGER, we'd map past the
+        # end of the file, which is the symptom of the RING_SIZE drift bug
+        # we used to ship — refuse to start with a clear message instead of
+        # silently corrupting the ring.
+        try:
+            actual          =   os.fstat(fd).st_size
+        except OSError:
+            actual          =   SHM_TOTAL       # can't stat? carry on
+        if actual < SHM_TOTAL:
+            os.close(fd)
+            raise RuntimeError(
+                f"IPC shared memory is smaller than expected.\n"
+                f"  /dev/shm/cpcu_ipc actual size: {actual} B\n"
+                f"  Python expects              : {SHM_TOTAL} B "
+                f"(RING_SIZE={RING_SIZE})\n"
+                f"  The C side's IPC_SENSOR_RING_SIZE in cpcu_ipc.h has "
+                f"probably drifted from RING_SIZE in cpcu_ipc_bridge.py.\n"
+                f"  Until they match, every offset past the ring "
+                f"(motor cmd, diag, dsp_export) is wrong — refusing to "
+                f"start to avoid silent corruption."
+            )
+        if actual > SHM_TOTAL:
+            print(f"[IPC] note: SHM is {actual} B, bridge maps {SHM_TOTAL} B "
+                  f"(tail region unused — C side has fields the bridge "
+                  f"doesn't know about yet)", flush=True)
+
         self.mm             =   mmap.mmap(fd, SHM_TOTAL, mmap.MAP_SHARED)
         os.close(fd)
         self._verify_magic()

@@ -1,16 +1,42 @@
-/*
- *  mongoose_stub.h — minimal Mongoose API surface used by cpcu_ws,
- *                    sufficient to satisfy the compiler when the real
- *                    Mongoose hasn't been fetched yet.
+/**
+ *  @file   mongoose_stub.h
+ *  @brief  Minimal Mongoose API surface used by cpcu_ws.c — a
+ *          parser-pleaser for offline builds, NOT a working library.
  *
- *  REAL mongoose.h (10K+ lines) goes here after running fetch.sh.
- *  This file exists so syntax/structure of cpcu_ws.c can be validated
- *  in CI / offline development environments where curl can't reach
- *  GitHub. CMakeLists.txt will pick the real mongoose.{c,h} when
- *  present and ignore this stub.
+ *  ROLE
+ *    When the real Mongoose source (mongoose.h + mongoose.c, ~10K
+ *    LOC) hasn't been fetched yet, cpcu_ws.c falls back to this
+ *    header so the compiler stays happy and CI / offline dev checks
+ *    can validate the rest of the build path. The resulting binary
+ *    refuses to serve and exits with a clear "stub mode" message.
  *
- *  DO NOT commit a build that links against this stub — it's a
- *  parser-pleaser, not a working WebSocket library.
+ *  DEPENDENCIES
+ *    None beyond <stdbool.h> / <stddef.h> / <stdint.h>. Intentionally
+ *    standalone so a fresh git clone on a machine that can't reach
+ *    GitHub still configures cleanly.
+ *
+ *  DOWNSTREAM
+ *    cpcu_ws.c        : includes this when CPCU_WS_HAVE_MONGOOSE is
+ *                       NOT defined. Every symbol declared here is
+ *                       referenced inside an
+ *                       `#ifdef CPCU_WS_HAVE_MONGOOSE` guard in
+ *                       cpcu_ws.c, so the stub never actually has to
+ *                       LINK — it only has to PARSE.
+ *    CMakeLists.txt   : checks for the real mongoose.{c,h} via
+ *                       file(GLOB ...) and defines
+ *                       CPCU_WS_HAVE_MONGOOSE when found.
+ *
+ *  CROSS-MODULE EFFECTS
+ *    Upgrading vendored Mongoose to a new upstream version: if the
+ *    upstream API renames a struct field or adds a required header
+ *    field, mirror it here so the stub continues to parse against
+ *    the same surface area cpcu_ws.c uses. The fields below are an
+ *    exact subset of the upstream 7.14 public API; keep them in sync
+ *    when bumping.
+ *
+ *  DO NOT ship a binary linked against this stub. Run
+ *  web/vendor/fetch.sh, then re-run cmake to pick up the real
+ *  library.
  */
 
 #ifndef MONGOOSE_STUB_H

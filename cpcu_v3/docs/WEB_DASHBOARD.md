@@ -1,12 +1,31 @@
 # Web Dashboard — Read-Only Multi-Viewer Bridge
 
-**Author:** bugrASl
-**Date:** April 2026
-**Version:** v2.4.0 (introduced)
-**Last updated:** v2.4.1 (Spectrum + Tools + mDNS guidance)
-**Audience:** anyone running the system, anyone planning to share live
-demos with friends/advisors, anyone debugging "the dashboard says it's
+**Audience:** anyone running the system, anyone sharing live demos
+with advisors/teammates, anyone debugging "the dashboard says it's
 disconnected."
+
+## DEPENDENCIES
+
+| File / region | What this dashboard relies on |
+|---|---|
+| `/dev/shm/cpcu_ipc` | Read-only mmap of the kernel's full IPC layout. |
+| `cpcu_ipc.h` | Struct definitions; IPC_VERSION is the schema-binding contract. |
+| `cpcu_ws.c` | Process that maps the SHM and emits the wire format. |
+| `cpcu_dsp.py` | Writes `/tmp/cpcu_group_state.txt` (per-group classifier digest). |
+| `mongoose` (vendored) | HTTP/WS event loop. Falls back to a stub when missing. |
+| `config/gestures.json` | Indirect — its emg_channels names + servo limits show up via IPC_RuntimeConfig. |
+
+## CROSS-MODULE EFFECTS
+
+- Schema bumps in `cpcu_ipc.h` (new region, struct grows, IPC_VERSION
+  changes) → rebuild `cpcu_ws` and verify `index.html` still consumes
+  every field it reads.
+- New tab on `index.html` → add a matching block in
+  `build_state_frame()` (state-tab data) or `build_wave_frame()`
+  (wave-tab data) in `cpcu_ws.c`.
+- New testbench claims an `IPC_ToolPresence` slot → add a payload
+  decoder in `build_state_frame()`'s `tools[]` loop in `cpcu_ws.c`,
+  and a card renderer in `index.html`.
 
 ---
 
@@ -29,25 +48,23 @@ dashboard called the **CPCU Dashboard**.
                                             ▼
                                    ┌─────────────────┐
                                    │  Browser tabs:  │
-                                   │  Overview       │
-                                   │  Waves          │
-                                   │  Spectrum       │
-                                   │  Tools          │
+                                   │  Arm            │
+                                   │  EMG            │
+                                   │  Diagnostics    │
                                    └─────────────────┘
 ```
 
 The dashboard is **read-only**. There is no command channel from the
 browser to the running system. The browser cannot enter edit mode,
 save config, drive servos, or affect anything else. If you want to
-tune values, use the TUI (which has the full v2.3.8 live editor) or
-pca_testbench at the bench.
+tune values, use the TUI live editor or `pca_testbench` at the bench.
 
-The bridge supports **multiple simultaneous viewers**. Friends on the
-same LAN can each open the dashboard URL in their browser; each
-connection gets its own broadcast. Default bind is `0.0.0.0:8765` so
-the Pi accepts connections from any device on its network. A loud
-warning prints at startup so you don't accidentally serve biosignals
-to a public network.
+The bridge supports **multiple simultaneous viewers**. Teammates on
+the same LAN can each open the dashboard URL; each connection gets
+its own broadcast. Default bind is `0.0.0.0:8765` so the Pi accepts
+connections from any device on its network. A loud warning prints at
+startup so you don't accidentally serve biosignals to a public
+network.
 
 ---
 
@@ -142,34 +159,39 @@ At 10 + 20 frame/s × 8 clients ≈ 36 ms/s = 3.6% of one core.
 
 ---
 
-## 3. The IPC layout in v2.4.0
+## 3. The IPC layout
 
-The C side bumps `IPC_VERSION` from `0x0205` (v2.3.8) to **`0x0206`**.
-
-Two new regions appear at the end of the SHM block:
+The bridge mmaps the full `/dev/shm/cpcu_ipc` block. Region sizes
+(matching `cpcu_ipc.h` and `cpcu_ipc_bridge.py::SHM_TOTAL`):
 
 ```
-... existing layout (192 + 65536 + 128 + 128 + 256 + 512 = 66752 B) ...
 +----------------------+
-| IPC_ToolPresence     |   8 slots × 64 B = 512 B
+| IPC_ControlBlock     |     192 B
+| IPC_SensorEntry ring |  262 144 B   (4096 entries × 64 B)
+| IPC_MotorCommand     |     128 B
+| IPC_Diagnostics      |     128 B
+| IPC_DSPExport        |     256 B
+| IPC_RuntimeConfig    |     512 B
+| IPC_ToolPresence     |     512 B    (8 slots × 64 B)
+| IPC_DspFiltered      |   6 432 B    (32 B header + 8×200 floats)
 +----------------------+
-| IPC_DspFiltered      |   32 B header + 8×200 floats = 6432 B
-+----------------------+
+Total                  : 270 304 B
 ```
 
-Total SHM size grows from `66240` to `73696` bytes. This is reflected
-in both the C macro `IPC_SHM_SIZE` and the Python bridge's
-`SHM_TOTAL` constant (which `cpcu_dsp.py` mmaps).
+The Python bridge mmaps the same total (`SHM_TOTAL` in
+`cpcu_ipc_bridge.py`). Any drift between the C `IPC_SHM_SIZE` and the
+Python `SHM_TOTAL` is caught at runtime by the size-guard in
+`IPCBridge.__init__` and aborts the DSP process loudly.
 
-### `IPC_ToolPresence` (declared in v2.4.0; partially populated in v2.4.1)
+### `IPC_ToolPresence`
 
 A small registry: 8 slots × 64 B each. Each tool that wants to be
 visible writes its own slot (alive flag, heartbeat timestamp, name,
-32-byte tool-specific payload). The bridge reads all slots and shows
-whichever are alive on the Tools tab.
+32-byte tool-specific payload). The bridge reads all slots and
+forwards alive+fresh entries in the state frame's `tools[]` array.
 
-In v2.4.1, **signal_testbench** writes slot 1 on every main-loop
-iteration (~20 Hz) and clears alive=0 on clean exit. Payload layout:
+Currently **signal_testbench** writes slot 1 on every main-loop
+iteration (~20 Hz) and clears `alive=0` on clean exit. Payload layout:
 
 ```
 payload[0]    = uint8   selected channel (0..7)
@@ -179,64 +201,56 @@ payload[5..8] = uint32  io_pkts_dropped counter (latest snapshot)
 
 **pca_testbench is intentionally NOT a publisher** even though slot 0
 is reserved for it. The reason: pca_testbench and cpcu_kernel are
-mutually exclusive (they both want to drive the I2C bus), so launch.sh
-stops the kernel before starting pca_testbench. But if cpcu_kernel
-is stopped, the bridge has nothing to read and is stopped too. So
-the configuration "pca_testbench is running and visible on the
-dashboard" is unreachable. We left slot 0 reserved in case some
-future bench tool needs it.
+mutually exclusive (they both want to drive the I2C bus), so
+`launch.sh` stops the kernel before starting pca_testbench. But if
+cpcu_kernel is stopped, the bridge has nothing to read and is stopped
+too. So the configuration "pca_testbench is running and visible on the
+dashboard" is unreachable. Slot 0 stays reserved in case some future
+bench tool needs it.
 
-### `IPC_DspFiltered` (populated by cpcu_dsp.py)
+### `IPC_DspFiltered` (populated by `cpcu_dsp.py`)
 
 Holds the most recent 200 samples (= 1 second @ 200 Hz) of the
 post-filter envelope per channel. Updated by `cpcu_dsp.py` on every
-processing window (~5 Hz with WINDOW_MS=200, STRIDE_MS=50).
+processing window. With `WINDOW_MS = 200` and `STRIDE_MS = 100`, this
+produces roughly one update every 100 ms (~10 Hz publish rate).
 
-Layout: 32 B header (seq, sample_rate_hz, update_us, padding) plus
-8 channels × 200 samples × 4 B = 6400 B. Total 6432 B.
+Layout: 32 B header (`seq`, `sample_rate_hz`, `update_us`, padding)
+plus 8 channels × 200 samples × 4 B = 6400 B. Total 6432 B.
 
-The Python bridge has a new method `write_dsp_filtered_window(ch_idx,
-samples_lo)` which appends a window's envelope to channel ch_idx's
-rolling buffer (shift-left by N, write new tail), with seqlock-style
-sequence bumping so readers can detect torn writes.
+The Python bridge has a `write_dsp_filtered_window(ch_idx, samples_lo)`
+method which appends a window's envelope to channel `ch_idx`'s rolling
+buffer (shift-left by N, write new tail), with seqlock-style sequence
+bumping so readers can detect torn writes.
 
 ### Filter chain producing the data
 
 ```
 2 kHz input ──┐
               ▼
-        decimate ×10  (200 Hz)
+        decimate ×5   (cpcu_dsp.py: DECIMATE_FACTOR = INPUT_FS_HZ / TARGET_FS_HZ)
               ▼
-      DC removal (subtract mean)
+      DC removal (subtract mean of the window)
               ▼
-   bandpass 20-95 Hz  (Butterworth, scipy auto-clamps from 450 to Nyquist*0.95)
+   bandpass 20-450 Hz  (Butterworth, scipy auto-clamps the upper
+                        cutoff against Nyquist)
               ▼
-        notch 50 Hz  (Q=30)
+        notch 50 Hz  (Q=30) → 100 Hz → 200 Hz
               ▼
-   envelope = LP 3 Hz on |signal|  ◄── what gets published
+   envelope = LP 3 Hz on |signal|   ◄── what gets published
               ▼
-       feature extraction (RMS/MAV/...)
+       feature extraction (RMS, var, WL, env_mean, MAV, ZC, SSC)
 ```
 
 The bridge publishes the **envelope**, not the post-bandpass signal.
-The envelope is what shows muscle activation patterns at small plot
-sizes; the bandpass-only signal oscillates within the envelope and
-is too high-frequency for the dashboard's wave plot.
+The envelope shows muscle activation patterns at small plot sizes;
+the bandpass-only signal oscillates within the envelope and is too
+high-frequency for the dashboard's wave plot.
 
-In v2.4.1 we wanted FFT for the Spectrum tab, which needs the
-*signal* — not the envelope. We considered three options:
-
-1. Have dsp publish a new `pre_envelope` channel.
-2. Have dsp publish the bandpass-only intermediate.
-3. Have the bridge ship raw 12-bit ADC windows and let the browser
-   do its own filtering / FFT.
-
-Option 3 won. The raw ring buffer is already what the bridge reads
-for the `raw` envelope; sending a wider window of those same samples
-costs no extra IPC region. The browser handles DC removal, Hann
-windowing, and the FFT itself. dsp stays unchanged. This adds the
-`raw_full` field to the wave frame (8 ch × 256 int16 samples per
-frame, ~10 KB at 20 Hz = 200 KB/s per client).
+For future spectrum / FFT views, the option chosen was to ship raw
+12-bit ADC windows in the `raw_full` field and let the browser
+compute its own FFT — that way DSP stays unchanged and the FFT cost
+doesn't scale with viewer count.
 
 ---
 
@@ -255,12 +269,26 @@ frame, ~10 KB at 20 Hz = 200 KB/s per client).
   "edit_mode": { "request": false, "active": false, "dsp_ack": false },
   "dsp": {
     "gesture": "rest",
-    "active_class": 0,
-    "num_classes": 3,
+    "active_class": 3,
+    "num_classes": 4,
     "confidence": 0.91,
-    "class_confidence": [0.91, 0.05, 0.04],
+    "class_confidence": [0.02, 0.04, 0.03, 0.91],
     "channel_rms": [0.012, 0.018, ...],
-    "inference_us": 142
+    "inference_us": 142,
+    "groups": [
+      {"name":"right_arm","state":"rest","confidence":91,"classes":{"rest":91,"hand":4,"flex":3,"ext":2}},
+      {"name":"left_arm","state":"rest","confidence":88,"classes":{"rest":88,"hand":6,"flex":4,"ext":2}}
+    ]
+  },
+  "motor": {
+    "servo_us": [1500, 1500, 1500, 1500, 1500, 1500],
+    "gesture_id": 3,
+    "confidence_pct": 91
+  },
+  "runtime_config": {
+    "servo_min_us": [498, 1074, 1074, 1001, 1001, 976],
+    "servo_max_us": [2500, 1953, 1953, 2002, 2002, 1733],
+    "config_seq": 7
   },
   "diag": {
     "io_pkts_received":  124350,
@@ -272,9 +300,20 @@ frame, ~10 KB at 20 Hz = 200 KB/s per client).
     "dsp_inferences":    24870,
     "dsp_max_latency_us": 312
   },
-  "bridge": { "now_us": 4587000123, "ipc_version": 518 }
+  "hysteresis": { "consec": 2, "needed": 3, "type": 0, "type_name": "rest_to_active" },
+  "latency":    { "pkt_to_servo_us": 35200, "seq_age": 18, "dsp_compute_us": 22400 },
+  "bridge":     { "now_us": 4587000123, "ipc_version": 518 }
 }
 ```
+
+The active model has 4 classes (`ext`, `flex`, `hand`, `rest` —
+alphabetical because sklearn sorts string labels at fit time). The
+`groups[]` array carries the per-group classifier digest that
+`cpcu_dsp.py` writes to `/tmp/cpcu_group_state.txt`; it lets the
+dashboard render right_arm and left_arm side by side without needing
+two IPC export blocks. The `runtime_config` block is forwarded from
+`IPC_RuntimeConfig` and lets the JS rescale servo bars against the
+operator's live calibration.
 
 ### Wave frame (Waves tab + Spectrum tab)
 
@@ -295,22 +334,26 @@ frame, ~10 KB at 20 Hz = 200 KB/s per client).
 }
 ```
 
-The Waves tab consumes `raw` (50 Hz envelope) and `filtered` (200 Hz
-envelope). The Spectrum tab (added in v2.4.1) consumes `raw_full`
-(2 kHz raw 12-bit ADC values, 128 ms windows) and computes its own
-FFT in-browser. `raw_full` adds ~10 KB per wave frame at 20 Hz =
-200 KB/s per client, comfortably within Pi 5 LAN throughput.
+The Waves-tab path (`raw`, `filtered`) and the Spectrum-tab path
+(`raw_full`, 2 kHz raw 12-bit ADC values in 128 ms windows) are both
+emitted on the wave frame, even though the shipped `index.html`
+doesn't yet render Spectrum. `raw_full` adds ~10 KB per wave frame
+at 20 Hz = ~200 KB/s per client, comfortably within Pi 5 LAN
+throughput — the cost is paid whether anyone's looking or not, but
+that's a fixed budget per client.
 
 If `filtered_present` is false, the dsp publisher hasn't started yet —
-either dsp isn't running, or it's running an old build that doesn't
-know about `IPC_DspFiltered`.
+either dsp isn't running, or it's running a build that predates the
+`IPC_DspFiltered` region.
 
 ### Hello frame
 
-Sent once on WS connect:
+Sent once on WS connect. Carries the bridge's compile-time
+`IPC_VERSION` so the client can fail loudly if it expects a different
+schema than the server's mapping:
 
 ```json
-{ "ch": "hello", "server": "cpcu_ws", "version": "v2.4.0", "ipc_version": 518 }
+{ "ch": "hello", "server": "cpcu_ws", "ipc_version": 518 }
 ```
 
 ---
@@ -410,72 +453,60 @@ Generates `/etc/systemd/system/cpcu_ws.service` with:
 
 ## 6. Browser dashboard tabs
 
-### Overview (live in v2.4.0)
+The shipped `index.html` exposes three tabs. The wire format
+emitted by `cpcu_ws.c` carries enough information for additional
+tabs (raw-full FFT data and a ToolPresence registry are already in
+the payload); those would be UI additions, not bridge changes. See
+the "Future work" section below.
 
-- Connection pill: green/yellow/red
-- Edit-mode banner: LOCKED / EDITING / PARKING / DSP UNRESPONSIVE
-- System: state, io_ready, dsp_ready, heartbeat age
-- Current gesture: large name + confidence percentage
-- Per-class confidence bars (the active class is highlighted)
-- Per-channel RMS bars (relative to peak)
-- Diagnostics counters (rx/dropped/ring/seq_gaps/safe/gripper_stalls/dsp_*)
+### Arm
 
-### Waves (live in v2.4.0)
+- Connection pill in the header: green = WS connected, red = retrying.
+- System-state pill: RUNNING / SAFE / INIT.
+- 3D arm canvas (three.js): six-DOF anthropomorphic arm with a
+  scissor-jaw gripper. Each joint reads its angle from the
+  corresponding `motor.servo_us[]` slot, mapped through the SV[]
+  fallback table — which itself is **rescaled live** from
+  `runtime_config.servo_min_us[]` / `servo_max_us[]` whenever the
+  kernel publishes a fresh `IPC_RuntimeConfig`. Calibration done in
+  the TUI live editor is reflected on the dashboard within one state
+  frame (~100 ms).
+- Overlay: current gesture name (large), top-1 confidence percentage,
+  per-group cards (state + per-class confidence histogram for
+  right_arm and left_arm).
+- Sidebar: all-gesture class panel (one block per gesture group with
+  rest/hand/flex/ext bars), hysteresis gate (state + vote counter),
+  servo position slider per joint.
 
-- Toggle: raw / filtered / both
-- 8 channels stacked vertically, each track ~60 px tall
-- Raw stream: 50 Hz envelope from `IPC_SensorEntry` ring (decimated)
-- Filtered stream: 200 Hz envelope from `IPC_DspFiltered`
-- Both streams plotted as line traces, raw in blue, filtered in green
-- Auto-rescaling per track within [0..1] envelope range
+### EMG
 
-### Spectrum (live in v2.4.1)
+- One card per channel (8 total).
+- Channel names map to gestures.json:
+  - ch0..ch2 = R_Hand, R_Biceps, R_Triceps (right_arm group)
+  - ch3..ch5 = L_Hand, L_Biceps, L_Triceps (left_arm group)
+  - ch6, ch7 = unused on the v3 BSAU board
+- Each card shows the channel's rolling RMS as a horizontal bar.
+- Updated at the 10 Hz state-frame cadence — sufficient for muscle
+  activation visualisation, well under the actual sampling rate.
 
-Per-channel selector buttons (ch0..ch7) at top. Two side-by-side
-panels:
+### Diagnostics
 
-- **Left: static spectrum.** 256-pt FFT of the most recent 128 ms
-  raw window for the selected channel. Hann window, DC removed.
-  Resolution ≈ 7.8 Hz/bin. A vertical reference line marks 50 Hz so
-  mains-hum spikes are obvious. Auto-normalized to the latest peak;
-  read it as relative shape, not absolute volts.
-- **Right: waterfall.** ~30 seconds of trailing FFT history for the
-  selected channel, viridis-colored. Newest at the top. Brighter =
-  more energy. Bands across time = persistent feature (good or bad);
-  intermittent flicker = loose contact or radio glitches; rising
-  noise floor = degrading link.
-
-The browser computes the FFT itself with a small radix-2 Cooley-Tukey
-implementation (~50 LOC of JS). The bridge ships the raw-full window
-in the wave frame as `raw_full` (8 channels × 256 int16 samples,
-~10 KB per frame at 20 Hz = 200 KB/s per client). Server-side FFT
-was rejected: per-frame cost would scale with client count and the
-browser does it for free.
-
-**Why not waterfall *in addition to* the existing wave plots?** The
-Waves tab is the *envelope* view (slow muscle activation patterns,
-post-3-Hz-LP). The Spectrum tab is the *spectral content* view (raw
-signal, full bandwidth up to 1 kHz). Both views are useful for
-different reasons; one doesn't replace the other.
-
-### Tools (live in v2.4.1, partial)
-
-Reads the `IPC_ToolPresence` registry every state frame and lists
-tools that are alive (`alive=1`) and fresh (heartbeat < 2 s old).
-Each tool gets a card with:
-
-- Status dot (green = fresh, red = stale)
-- Tool name and slot number
-- Heartbeat age in milliseconds
-- Per-tool decoded state (channel, amplitude, drops, etc.)
-
-In v2.4.1, only **signal_testbench (slot 1)** publishes to this
-registry. The pca_testbench publisher is intentionally deferred —
-see §9 for the rationale.
-
-If no tools are running, the panel says "no tools running" (which
-is the most common state — most of the time you only have
-cpcu_kernel running, and the dashboard is reading from it).
+- **System state** rows: state, io_ready, dsp_ready, active gesture,
+  confidence percentage.
+- **Packet statistics**: packets received, sequence gaps, ring
+  overflows, sequence age.
+- **Latency breakdown**:
+  - BSAU stage (datasheet, constants): ADC+pack (226 µs) + wireless
+    (332 µs) = **558 µs**.
+  - CPCU stage (measured by `cpcu_dsp.py`, exported via
+    `IPC_DSPExport._pad1[]`): SPI read+unpack, ring dwell, DSP
+    compute, inference worst-case.
+  - Servo stage: smoother+I²C (~610 µs) + mechanical (~15 ms).
+  - Totals: `pkt→servo_us` (CPCU only) and the full BSAU→CPCU→servo
+    chain, colour-coded against the 300 ms SYS-REQ-01 budget.
+- **Safety**: SAFE entries, gripper stalls, hysteresis type and votes.
+- **DSP pipeline**: total inferences, gesture classes count, active
+  class, per-class confidences.
 
 ---
 
@@ -500,7 +531,7 @@ project ever moves to a hospital network or public-internet access:
   Encrypt TLS in front of the bridge.
 - Or, simpler: bind to `127.0.0.1` and require an SSH tunnel.
 
-Both are out of scope for v2.4.0 but documented as future work.
+Both are out of scope today but documented as future work.
 
 ---
 
@@ -517,9 +548,9 @@ isn't up. Start it first (`scripts/launch.sh kernel` or
 
 **Browser shows "filtered stream not yet published"**: cpcu_dsp.py
 isn't publishing into `IPC_DspFiltered`. Either dsp isn't running, or
-it's running an older build (pre-v2.4.0). Confirm with
-`journalctl -u cpcu | grep DSP` — the v2.4.0 dsp logs the IPC version
-on startup.
+it's running a build from before the dsp_filtered region existed.
+Confirm with `journalctl -u cpcu | grep DSP`; the dsp process logs
+the IPC version it sees on startup, which must match the bridge's.
 
 **Multiple viewers connect but only one updates**: this would be a
 bug; `cpcu_ws.c::broadcast()` walks every connection in the manager's
@@ -540,27 +571,35 @@ run `./launch.sh set-model` to enable inference.
 
 ---
 
-## 9. v2.4.1 status — what shipped, what's still out
+## 9. Current scope and future work
 
-### Shipped in v2.4.1
+**Currently shipped:**
 
-| Feature | Status |
+- 3-tab dashboard (Arm, EMG, Diagnostics) consuming the state frame.
+- Live servo limits via `runtime_config` so calibration done in the
+  TUI is reflected on the dashboard within a frame.
+- mDNS / `cpcu.local:8765` resolution (uses the Pi's built-in Avahi;
+  `sudo hostnamectl set-hostname cpcu`).
+- `IPC_ToolPresence` slot 1 is populated by `signal_testbench` on
+  every loop iteration (~20 Hz). The bridge forwards the registry
+  as the state frame's `tools[]` array — nothing in the shipped
+  `index.html` renders it yet (the data is there for whoever wires
+  it up).
+- The wave frame already carries `raw_full` (8 ch × 256 int16
+  samples), enough for a browser-side FFT / spectrum tab when one
+  is added.
+
+**Deliberately out:**
+
+| Item | Why |
 |---|---|
-| Spectrum tab — per-channel selector, browser FFT, waterfall | ✓ shipped |
-| signal_testbench publisher to `IPC_ToolPresence` slot 1 | ✓ shipped |
-| Tools tab — reads `IPC_ToolPresence`, shows alive tools | ✓ shipped |
-| mDNS / `cpcu.local:8765` resolution | ✓ documented (uses Pi's built-in Avahi; `sudo hostnamectl set-hostname cpcu`) |
-
-### Still out — and why
-
-| Out-of-scope | Why |
-|---|---|
-| pca_testbench publisher | The tool is mutually exclusive with cpcu_kernel (both want the I2C bus). Since the bridge requires cpcu_kernel running, the configuration "pca_testbench is running and visible on the dashboard" is unreachable. Slot 0 stays reserved. |
-| Audio sonification of EMG (Web Audio API) | Cute, not load-bearing for the defense |
-| 3D arm visualization | Needs geometry; a botched 3D viz looks worse than no viz. Targeted for v2.5. |
-| Browser-side editing or commands | Explicit "no" — read-only by design |
-| TLS / authentication | LAN is the trust boundary (see §7). For public-internet access, document SSH tunnel; nginx-front-proxy is the path forward if/when it matters. |
-| Formal `_http._tcp` Avahi service-publication file | Pure cosmetic; `<hostname>.local` already resolves on networks that pass mDNS, no extra file needed |
+| Spectrum / waterfall tab | Wire format ready (`raw_full`), JS not yet written. Would be a UI-only addition. |
+| Tools tab on `index.html` | Same — `tools[]` array is already in the state frame; renderer not implemented. |
+| pca_testbench publisher to slot 0 | `pca_testbench` is mutually exclusive with `cpcu_kernel` (both want the I²C bus). Because the bridge requires the kernel to be up, the configuration "pca_testbench running and visible on the dashboard" is unreachable. Slot 0 stays reserved. |
+| Audio sonification of EMG | Not load-bearing for the defence. |
+| Browser-side editing or commands | Explicit "no" — read-only by design. |
+| TLS / authentication | LAN is the trust boundary (see §7). For public-internet access, document SSH tunnel; `nginx` front-proxy is the path forward if it matters. |
+| Formal `_http._tcp` Avahi service-publication file | Pure cosmetic; `<hostname>.local` already resolves on networks that pass mDNS, no extra file needed. |
 
 ---
 
@@ -568,18 +607,18 @@ run `./launch.sh set-model` to enable inference.
 
 | File | Purpose |
 |------|---------|
-| `./src/cpcu_ws.c` | Bridge process: IPC mapping, broadcast loop, JSON builders, Mongoose handler. v2.4.1 added `raw_full` field for browser FFT and `tools` array reading `IPC_ToolPresence`. |
-| `./include/cpcu_json.h` + `./src/cpcu_json.c` | Hand-rolled JSON writer |
-| `./web/static/index.html` | Single-page browser dashboard. v2.4.1 added Spectrum tab (FFT + waterfall) and Tools tab. |
-| `./web/vendor/README.md` + `fetch.sh` + `mongoose_stub.h` | Mongoose vendoring |
-| `./include/cpcu_ipc.h` | Region declarations (IPC_ToolPresence, IPC_DspFiltered); IPC_VERSION 0x0206 |
-| `./src/cpcu_ipc.c` | New region pointers wired in `ipc_map_ptrs` |
-| `./python/cpcu_dsp.py` | Per-window publish to `IPC_DspFiltered` |
-| `./python/cpcu_ipc_bridge.py` | Region offsets + `write_dsp_filtered_window` method |
-| `./scripts/launch.sh` | `ws` and `install-ws-service` modes |
-| `./test/signal_testbench.c` | v2.4.1: publishes to `IPC_ToolPresence` slot 1 each loop iteration |
-| `./test/json_testbench.c` | 7 unit tests for the JSON serializer |
-| `./CMakeLists.txt` | `cpcu_ws` and `json_testbench` targets; mongoose presence detection |
+| `./src/cpcu_ws.c` | Bridge process: IPC mapping, broadcast loop, JSON builders, Mongoose handler. Emits state frame (10 Hz) and wave frame (20 Hz), the latter including `raw_full` so browsers can compute their own FFT. |
+| `./include/cpcu_json.h` + `./src/cpcu_json.c` | Hand-rolled JSON writer (no-malloc, caller-supplied buffer). |
+| `./web/static/index.html` | Single-page browser dashboard (Arm / EMG / Diagnostics tabs). |
+| `./web/vendor/README.md` + `fetch.sh` + `mongoose_stub.h` | Mongoose vendoring + offline-build stub. |
+| `./include/cpcu_ipc.h` | All IPC region declarations; `IPC_VERSION` is the schema-binding contract. |
+| `./src/cpcu_ipc.c` | Region pointer wiring in `ipc_map_ptrs`. |
+| `./python/cpcu_dsp.py` | Per-window publish to `IPC_DspFiltered`; writes `/tmp/cpcu_group_state.txt` for the per-group view. |
+| `./python/cpcu_ipc_bridge.py` | Python mmap of the same SHM; `write_dsp_filtered_window` helper. |
+| `./scripts/launch.sh` | `ws` and `install-ws-service` subcommands. |
+| `./test/signal_testbench.c` | Publishes to `IPC_ToolPresence` slot 1 — example of the tool-publisher pattern. |
+| `./test/json_testbench.c` | Unit tests for the JSON serializer. |
+| `./CMakeLists.txt` | `cpcu_ws` and `json_testbench` targets; mongoose presence detection. |
 
 ---
 
@@ -587,10 +626,8 @@ run `./launch.sh set-model` to enable inference.
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — overall layering;
   the bridge is a Core 0 IPC consumer like the TUI.
-- [`TUI_EDITOR.md`](TUI_EDITOR.md) §4 — the dashboard's edit-mode banner
-  reflects the v2.3.4 handshake state.
-- [`TUI_EDITOR.md`](TUI_EDITOR.md) — what edit mode is *for*. The
-  dashboard shows when someone is editing; the actual editing
-  happens in the TUI.
+- [`TUI_EDITOR.md`](TUI_EDITOR.md) — the dashboard's edit-mode banner
+  reflects the same handshake state the TUI's editor uses; the
+  actual editing only happens in the TUI.
 - [`CONFIGURATION.md`](CONFIGURATION.md) — where the values
   visible in the dashboard come from.

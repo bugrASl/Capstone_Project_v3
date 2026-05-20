@@ -2,13 +2,42 @@
  *  @file   cpcu_tui.c
  *  @brief  ncurses live dashboard — main loop, key dispatch, boot sequence.
  *
- *  7-page TUI for monitoring and configuring the running system:
- *    Page 1: Overview    Page 2: Radio/IO     Page 3: DSP/AI
- *    Page 4: Waves       Page 5: Health       Page 6: Dataset
- *    Page 7: Config (with live editor)
+ *  ROLE
+ *    Process entry-point for the TUI binary. Runs UNPINNED (no CPU
+ *    affinity, no realtime priority — the realtime cores are reserved
+ *    for cpcu_io and cpcu_dsp.py). Owns the run/quit state, the
+ *    active page index, and demo-mode flag; the render layer only
+ *    READS those. Refresh cadence is REFRESH_US (~30 Hz) — fast
+ *    enough that key responses feel snappy, slow enough that ncurses
+ *    redraw cost stays a rounding error on Core 0.
  *
- *  Reads IPC shared memory at ~10 Hz refresh. Supports demo mode with
- *  synthetic data for development without hardware.
+ *    Seven pages, switchable with arrow keys / page-number digits:
+ *      Page 1 Overview     Page 2 Radio/IO    Page 3 DSP/AI
+ *      Page 4 Waves        Page 5 Health      Page 6 Dataset
+ *      Page 7 Config (live editor via cpcu_tui_editor)
+ *
+ *  DEPENDENCIES
+ *    cpcu_tui.h           : Shared TUI types and globals.
+ *    cpcu_tui_editor.h    : Edit-mode handshake against cpcu_io.
+ *    cpcu_ipc.h           : Read-only consumer of all IPC regions.
+ *    ncurses              : terminal rendering.
+ *
+ *  DOWNSTREAM
+ *    Nothing depends on this file's symbols — it's the entry-point.
+ *    The render and data translation units read main_module state
+ *    via the externs declared in cpcu_tui.h.
+ *
+ *  CROSS-MODULE EFFECTS
+ *    - When the CONFIG-page editor is invoked, the edit-mode
+ *      handshake (request → ack → active) gates cpcu_io's motor
+ *      command consumption. Touching the protocol on either side
+ *      forces matching changes here.
+ *    - --demo flag synthesises ring data via cpcu_tui_data.c rather
+ *      than reading from the real ring; it's the only path that
+ *      lets the TUI run without cpcu_kernel up.
+ *    - --operator NAME is consumed by the CONFIG page to display
+ *      which operator profile launch.sh said it was loading; the
+ *      actual file resolution still happens in cpcu_dsp.py.
  */
 
 #include "cpcu_tui.h"

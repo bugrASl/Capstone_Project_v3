@@ -169,7 +169,14 @@ extern uint8_t   demo_conf;
 /*============= DATASET CAPTURE ============================================================*/
 
 #define DATASET_OUT_DIR     "./datasets"
-#define DATASET_LABEL_COUNT 10
+/* Number of capture-label slots offered on the Dataset page.
+ *
+ * Matches the active model (models/arm.pkl): 4 alphabetical classes
+ * — ext, flex, hand, rest — set in CLS_NAMES inside
+ * cpcu_tui_render.c. To capture data for a wider gesture set later,
+ * bump this AND extend CLS_NAMES in the same commit; the LEFT/RIGHT
+ * label cycler in cpcu_tui.c uses this value as the modulus. */
+#define DATASET_LABEL_COUNT 4
 #define DATASET_PATH_MAX    256
 #define DATASET_LINE_MAX    192
 

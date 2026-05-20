@@ -1,113 +1,60 @@
 /**
- *  @file       cpcu_io.c
- *  @brief      Core 3 — Real-time I/O controller
- *  @author     bugrASl
- *  @date       April 2026
- *  @version    2.3.7
- *  @details    Deterministic loop:
- *                  1. Busy-poll NRF via spidev         -> read payload
- *                  2. WL_Unpack -> seq/safety/link     -> push to SPSC ring
- *                  3. Rate-limited (50 Hz) PCA servo update via I2C
- *                  4. Safety checks: radio, DSP, I2C, thermal, ring
- *                  5. Heartbeat to shared memory for watchdog
+ *  @file   cpcu_io.c
+ *  @brief  Core-3 realtime I/O loop — BSAU radio receiver + PCA9685 servo driver.
  *
- *              v2.3.7 changes:
- *                  - Gripper stall watchdog. When the smoother current
- *                    has been at servo_min[5] (within 5 us) for
- *                    grip_stall_recover_ms continuously, AND the target
- *                    is still asking it to stay there, retreat to
- *                    grip_touch_us. While active, incoming target[5]
- *                    is clamped at grip_touch_us as a floor. Clears on
- *                    target rising above touch+margin for 250 ms, or
- *                    on SAFE. The io_gripper_stalls counter in
- *                    IPC_Diagnostics tracks fires. Hardware-protection
- *                    backstop to dsp's soft-firm clamp; see SOFT_GRIP.md.
+ *  ROLE
+ *    The lowest layer of the realtime stack. Runs pinned to CPU core 3
+ *    at SCHED_FIFO priority 90 (highest in the system, set by
+ *    cpcu_kernel). Polls the nRF24L01+ via SPI, unpacks each
+ *    BSAU packet into IPC sensor entries, services a 50 Hz smoother
+ *    tick that translates motor_cmd targets into PCA9685 I2C writes,
+ *    and feeds the safety FSM on every cycle.
  *
- *              v2.3.6 changes:
- *                  - Smoother per-channel velocity / accel / deadband
- *                    are now consumed from IPC_RuntimeConfig at startup
- *                    AND on every config_seq change (i.e. after the
- *                    kernel reloads runtime.json on SIGHUP). The
- *                    apply_runtime_smoother_cfg helper calls SMOOTH_Set*
- *                    for each channel; zero values are skipped (mean
- *                    "use compile-time default"). The seq-compare
- *                    avoids redundant reapplies on the steady-state
- *                    50 Hz tick. See docs/SMOOTHER_TUNING.md.
+ *    Deterministic by construction: no malloc in the hot path, no
+ *    Python, no blocking syscalls. SPI / I2C have hard timeout
+ *    backstops; ring writes use atomic head/tail with overflow
+ *    detection.
  *
- *              v2.3.4 changes:
- *                  - Edit-mode handshake responder. When the TUI sets
- *                    ipc.ctrl->edit_mode_request = 1, cpcu_io overrides
- *                    incoming motor commands, parks the smoother at
- *                    neutral, and once SMOOTH_AllSettled() goes true
- *                    flips ipc.ctrl->edit_mode_active = 1 to tell the
- *                    TUI it's safe to edit. While active is 1, motor
- *                    commands from cpcu_dsp.py are silently ignored
- *                    (sticky-park). On request -> 0, active drops and
- *                    normal motor-cmd processing resumes. Safety FSM
- *                    has priority — any SAFE transition forces
- *                    edit_mode_active back to 0 unconditionally. Full
- *                    protocol in docs/EDIT_MODE.md.
+ *  DEPENDENCIES — what this module READS
+ *    cpcu_ipc.h, cpcu_ipc.c   : SHM bring-up + atomic operations on
+ *                               the ring/motor/diag/control regions.
+ *                               RuntimeConfig (servo limits, smoother
+ *                               params, grip thresholds, bias)
+ *                               consumed once per servo tick.
+ *    nrf24l01_linux.[ch]      : SPI bus / NRF state machine. Channel
+ *                               and address are compile-time constants
+ *                               defined just below (NRF_CHANNEL must
+ *                               match BSAU's channel 76).
+ *    wireless_packet.h        : WL_Unpack to decode BSAU frames.
+ *    cpcu_pca9685.[ch]        : I2C servo driver — the only writer of
+ *                               PCA9685 PWM registers on the system.
+ *    cpcu_smooth.[ch]         : Per-servo slew limiter + deadband.
+ *                               Compile-time defaults overridden by
+ *                               IPC_RuntimeConfig (apply_runtime_*).
+ *    cpcu_safety.[ch]         : Centralised safety FSM. We Feed its
+ *                               inputs each cycle and Check before
+ *                               every actuation.
+ *    cpcu_log.h               : Structured logging macros.
  *
- *              v2.3.3 changes:
- *                  - Reads IPC_RuntimeConfig once per servo tick
- *                    (cfg_cache local). Per-servo bias offsets
- *                    (cfg_cache.servo_bias_us[]) are added to the
- *                    smoothed pulse-width before clamping to
- *                    compile-time hardware limits and writing the PCA.
- *                    Bias is signed (typically +/- 20 us) and is
- *                    intended for static gravity-sag compensation;
- *                    runtime tunable from JSON, picked up on next
- *                    SIGHUP-driven kernel reload. The bias-then-clamp
- *                    order means the runtime config can never escape
- *                    the compile-time safety envelope. See
- *                    docs/RUNTIME_CONFIG.md.
- *                  - SMOOTH_MarkWritten now records the BIASED pulse
- *                    width that actually went to the PCA, so the
- *                    deadband logic stays coherent against the true
- *                    hardware state.
+ *  DOWNSTREAM — what reads what this module PRODUCES
+ *    cpcu_dsp.py              : Pops IPC ring entries for inference.
+ *    cpcu_tui / cpcu_ws       : Read motor_cmd, diagnostics counters,
+ *                               heartbeat. Display-only.
+ *    PCA9685 (I2C device)     : Receives per-servo PWM writes; the
+ *                               smoother decides which writes happen.
  *
- *              v2.3.2 changes:
- *                  - Per-servo PCA writes are now gated on
- *                    SMOOTH_ShouldWrite() to suppress redundant refreshes
- *                    of settled servos. A servo holding its target within
- *                    its hold_deadband_us[] window stops being commanded,
- *                    which kills static jitter caused by the servo's
- *                    internal P controller fighting backlash and gravity
- *                    sag on every 50 Hz tick.
- *                  - SAFETY_FeedI2C is only invoked on ticks that
- *                    actually performed I/O, so a pure-deadband tick
- *                    (all servos settled, no writes) doesn't pollute
- *                    the I²C health counters.
- *                  - SMOOTH_MarkWritten called after each successful
- *                    write to keep the deadband shadow coherent.
- *                  - PCA_SetAllNeutral (SAFE-snap path) and PCA_AllOff
- *                    (I²C-streak path) update the shadow appropriately:
- *                    the SAFE path marks all written; the AllOff path
- *                    clears ever_written so the first post-recovery
- *                    write always goes through.
- *                  - See docs/JITTER_MITIGATION.md.
- *
- *              v2.3 changes:
- *                  - Now calls SAFETY_UpdateState() once per loop after the
- *                    Feed/Check calls. The v2.2 architectural change that
- *                    moved battery / thermal / i2c / ring transitions out
- *                    of FeedPacket and into UpdateState was never wired up
- *                    here; without this call the FSM would update boolean
- *                    flags but never move out of RUNNING for non-radio
- *                    faults. SAFETY_CheckSystem already gated on the flags
- *                    so servos were neutralised correctly, but the TUI
- *                    state indicator lied during a battery / thermal /
- *                    ring fault.
- *
- *              v2.2 changes:
- *                  - Uses cpcu_log LOG_* macros everywhere (no more printf)
- *                  - Supports --log flag for per-module CSV output
- *                  - On sustained SPI errors, now calls NRF_FlushRX / NRF_ClearIRQ /
- *                    NRF_PowerDown before re-init (cleaner recovery)
- *                  - Reports NRF_GetStatus + STATUS bits in 1 Hz telemetry
- *                  - Calls PCA_AllOff on graceful shutdown (instead of neutral)
- *                    so no current flows after exit
- *                  - Reports SMOOTH_AllSettled() in telemetry for motion tracking
+ *  CROSS-MODULE EFFECTS
+ *    - NRF channel changes here MUST be mirrored on BSAU firmware.
+ *      The two radios won't hear each other otherwise. The TUI's
+ *      Radio page reads the same constant — keep them in sync.
+ *    - Removing or adding a smoother/grip/runtime field forces an
+ *      IPC_RuntimeConfig schema bump in cpcu_ipc.h + a parser update
+ *      in cpcu_config.c.
+ *    - This is the SOLE owner of /dev/i2c-1. cpcu_kernel must stop
+ *      this process before pca_testbench runs, and vice versa.
+ *    - The realtime priority discipline is the kernel's job; if
+ *      cpcu_kernel spawns this with the wrong policy the radio loop
+ *      will still run but will drop packets under load.
  */
 
 #include <stdio.h>
@@ -121,7 +68,9 @@
 #include <sys/mman.h>
 #include <linux/gpio.h>
 #include <sys/ioctl.h>
-#include <termios.h>
+/* (termios.h removed with the UART debug stream — see commit notes:
+ * the stream now lives in cpcu_dsp.py only, which avoids two processes
+ * fighting over the same tty at different baud rates.) */
 
 #include "nrf24l01_linux.h"
 #include "wireless_packet.h"
@@ -139,7 +88,11 @@
 #define I2C_DEVICE              "/dev/i2c-1"
 #define PCA9685_ADDR            0x40
 #define GPIO_CE                 25
-#define NRF_CHANNEL             108
+/* NRF radio channel — MUST equal BSAU's channel; both sides hop to the
+ * same RF frequency or the link never forms. BSAU is configured for
+ * channel 76 (2.476 GHz), so cpcu_io has to use 76 as well. If you
+ * change one side, change the other in the same commit. */
+#define NRF_CHANNEL             76
 #define NRF_ADDRESS             {0xE7, 0xE7, 0xE7, 0xE7, 0xE7}
 
 #define NRF_INIT_RETRIES        3
@@ -273,31 +226,13 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    /* UART raw sample streaming (1kHz, optional)
-     * Enable with env CPCU_UART_DEBUG=/dev/ttyAMA0 */
-    int uart_fd = -1;
-    {
-        const char *uart_path = getenv("CPCU_UART_DEBUG");
-        if(uart_path && uart_path[0])
-        {
-            uart_fd = open(uart_path, O_WRONLY | O_NOCTTY | O_NONBLOCK);
-            if(uart_fd >= 0)
-            {
-                struct termios t;
-                tcgetattr(uart_fd, &t);
-                cfsetospeed(&t, B115200);
-                t.c_cflag = CS8 | CLOCAL | CREAD;
-                t.c_oflag = 0;
-                t.c_lflag = 0;
-                tcsetattr(uart_fd, TCSANOW, &t);
-                LOG_I("IO", "UART debug → %s @ 115200", uart_path);
-            }
-            else
-            {
-                LOG_W("IO", "UART open(%s) failed: %s", uart_path, strerror(errno));
-            }
-        }
-    }
+    /* UART debug raw-sample streaming used to live here. It has been
+     * MOVED to cpcu_dsp.py exclusively. Two processes writing to the
+     * same /dev/ttyAMA0 at conflicting baud rates (cpcu_io: 115200,
+     * cpcu_dsp: 921600 — last tcsetattr wins) interleaved bytes and
+     * corrupted monitor.py's CSV parser. Single writer means clean
+     * lines, consistent baud, no fight. Re-enable from cpcu_dsp.py
+     * via CPCU_UART_DEBUG=<path> if you need raw samples on the host. */
 
     /*  Init NRF with retry */
     NRF_Handle nrf;
@@ -541,18 +476,10 @@ int main(int argc, char *argv[])
                 IPC_PushSensor(&ipc, &pkt, t);
                 atomic_fetch_add(&ipc.diag->io_pkts_received, 1);
 
-                /* UART raw streaming: seq,ch0,ch1,...,ch7 at 1kHz */
-                if(uart_fd >= 0)
-                {
-                    char ubuf[128];
-                    WL_SampleSet *s = &pkt.samples[0];
-                    int ulen = snprintf(ubuf, sizeof(ubuf),
-                        "%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
-                        pkt.seq,
-                        s->ch[0], s->ch[1], s->ch[2], s->ch[3],
-                        s->ch[4], s->ch[5], s->ch[6], s->ch[7]);
-                    write(uart_fd, ubuf, ulen);
-                }
+                /* (UART raw streaming moved to cpcu_dsp.py — see header
+                 * comment near the removed termios.h include for the
+                 * full rationale. Don't add another writer here; pick
+                 * exactly one process to own the tty.) */
             }
 
             /* Belt-and-braces: clear RX_DR (bit 6) if it's still asserted.
@@ -987,7 +914,7 @@ int main(int argc, char *argv[])
         NRF_Close(&nrf);
     }
 
-    if(uart_fd >= 0) close(uart_fd);
+    /* (no UART fd to close — debug streaming lives in cpcu_dsp.py) */
     IPC_Close(&ipc);
     close(gpio_fd);
     Log_CloseFiles();

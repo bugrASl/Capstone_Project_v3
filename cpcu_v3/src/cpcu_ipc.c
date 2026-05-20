@@ -1,16 +1,50 @@
 /**
  *  @file   cpcu_ipc.c
- *  @brief  POSIX shared memory IPC — create, open, close, ring buffer, seqlock.
+ *  @brief  POSIX shared memory IPC — create / open / close / ring / seqlock.
  *
- *  Manages a single /dev/shm/cpcu_ipc region containing:
- *    - Control block (192 B): system state, heartbeats, edit-mode flags.
- *    - Sensor ring (64 KB): lock-free SPSC ring buffer, 1024 entries.
- *    - Motor command (128 B): seqlock-protected servo targets.
- *    - Diagnostics (128 B): atomic counters per subsystem.
- *    - DSP export (256 B): gesture name, confidence, RMS per channel.
- *    - Runtime config: servo limits, smoother params, grip thresholds.
- *    - Tool presence (512 B): side-tool heartbeat registry for dashboard.
- *    - DSP filtered (6.4 KB): post-filter envelope for web visualization.
+ *  ROLE
+ *    Foundation for every cross-process communication in the system.
+ *    Owns the on-disk layout of /dev/shm/cpcu_ipc. The kernel calls
+ *    IPC_Create once at startup (sized via IPC_SHM_SIZE); cpcu_io,
+ *    cpcu_dsp.py, cpcu_tui, and cpcu_ws all call IPC_Open and share
+ *    the same mapping by struct overlay.
+ *
+ *    Regions, in order:
+ *      - Control block    (192 B)   : system state, heartbeats, edit-mode flags
+ *      - Sensor ring      (256 KB)  : SPSC lock-free, 4096 × 64 B entries
+ *      - Motor command    (128 B)   : seqlock-protected servo targets
+ *      - Diagnostics      (128 B)   : atomic counters per subsystem
+ *      - DSP export       (256 B)   : gesture name, confidence, RMS, latency
+ *      - Runtime config   (512 B)   : servo limits, smoother, grip thresholds
+ *      - Tool presence    (512 B)   : side-tool heartbeat registry
+ *      - DSP filtered     (6.4 KB)  : post-filter envelope for web viz
+ *
+ *  DEPENDENCIES
+ *    cpcu_ipc.h          : All struct definitions and the IPC_SHM_SIZE
+ *                          macro that determines the ftruncate size.
+ *                          Any field reorder/grow here forces a
+ *                          rebuild of every consumer.
+ *
+ *  DOWNSTREAM (every process that maps the same SHM)
+ *    cpcu_kernel         : Producer of system_state, edit-mode acks,
+ *                          IPC_RuntimeConfig (loaded from runtime.json).
+ *    cpcu_io             : Producer of sensor ring entries + motor
+ *                          command consumer; updates io_* diagnostics.
+ *    cpcu_dsp.py         : Consumer of sensor ring; producer of motor
+ *                          command, dsp_export, dsp_filtered.
+ *    cpcu_tui            : Read-only consumer of all regions.
+ *    cpcu_ws             : Read-only consumer of all regions; forwards
+ *                          JSON snapshots to browsers.
+ *    cpcu_ipc_bridge.py  : Python mirror of this layout — RING_SIZE
+ *                          and offsets MUST stay in lockstep with the
+ *                          C side or both sides corrupt the ring.
+ *
+ *  CROSS-MODULE EFFECTS
+ *    - Any size change in any region cascades to every consumer.
+ *      test_ipc_bridge.py exists to catch C-vs-Python drift at the
+ *      offset level; run it after touching this file.
+ *    - IPC_VERSION (in cpcu_ipc.h) is the version word the bridge
+ *      hands to clients. Bump it on every wire-incompatible change.
  */
 
 #include "cpcu_ipc.h"

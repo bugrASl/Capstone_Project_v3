@@ -2,10 +2,47 @@
  *  @file   cpcu_tui_data.c
  *  @brief  TUI data layer — demo signal synthesis, dataset capture, wave ring.
  *
- *  Generates synthetic EMG waveforms for demo mode (sine, chirp, multi-tone,
- *  noise-burst, AM, chirp-burst). Drains the IPC sensor ring into a rolling
- *  per-channel waveform buffer for the Waves page. Manages CSV file I/O for
- *  the Dataset capture page (start/stop/save/cancel).
+ *  ROLE
+ *    Owns the per-channel rolling waveform buffer the Waves page
+ *    renders, the dataset-capture state machine the Dataset page
+ *    drives, and the synthetic-EMG generator used when the TUI runs
+ *    with --demo (no kernel, no real BSAU radio). Only writes — the
+ *    render layer reads these buffers without locking, accepting an
+ *    occasional torn frame as visually negligible.
+ *
+ *  DEPENDENCIES
+ *    cpcu_tui.h           : Shared TUI types and globals.
+ *    cpcu_ipc.h           : Sensor ring read API for the non-demo
+ *                           drain path (we are the THIRD reader after
+ *                           cpcu_dsp and cpcu_ws — we keep our own
+ *                           private tail, never advance the real
+ *                           sensor_tail).
+ *    demo_signals.h       : Synthetic waveform primitives (sine,
+ *                           chirp, multi-tone, noise burst, AM).
+ *    POSIX filesystem     : Dataset capture writes CSVs under
+ *                           ./datasets/<gesture>_<operator>_<ts>.csv.
+ *
+ *  DOWNSTREAM
+ *    cpcu_tui_render.c    : Reads the waveform ring and dataset
+ *                           state. Reads the demo_* counters for the
+ *                           Overview page in demo mode.
+ *    cpcu_tui.c           : Drives demo_advance() once per refresh
+ *                           tick when in demo mode; calls dataset
+ *                           start/stop/save/cancel from key
+ *                           dispatch.
+ *
+ *  CROSS-MODULE EFFECTS
+ *    - Changing the dataset CSV format breaks any external trainer
+ *      that consumes it (predictX.py, the team's notebooks).
+ *      The current schema is documented at the top of the dataset
+ *      writer.
+ *    - The demo gesture cycler uses (demo_gesture % DATASET_LABEL_COUNT);
+ *      adding or removing classes from CLS_NAMES in cpcu_tui_render.c
+ *      requires bumping DATASET_LABEL_COUNT in cpcu_tui.h or the
+ *      cycler will display nonsense classes in demo mode.
+ *    - We do NOT touch sensor_tail. cpcu_io is the producer, cpcu_dsp
+ *      the canonical consumer; advancing tail here would steal data
+ *      from the DSP loop and break inference.
  */
 
 #include "cpcu_tui.h"
@@ -31,7 +68,7 @@ uint32_t  demo_fault_mask       =   FAULT_NONE;
 uint64_t  demo_fault_onset_ms   =   0;
 DemoWave  demo_wave             =   WAVE_SINE;
 float     demo_freq_hz          =   100.0f;
-uint8_t   demo_gesture          =   1;      /* HAND_SLOW */
+uint8_t   demo_gesture          =   1;      /* CLS_NAMES[1] = FLEX (alphabetical) */
 uint8_t   demo_conf             =   94;
 
 /*============= DEMO STATE (PRIVATE) =======================================================*/
@@ -232,7 +269,7 @@ void demo_tick(IPC_Context *ipc)
 
     if(atomic_load(&ipc->ctrl->system_state) == IPC_STATE_RUNNING
        && demo_inf_count % 50 == 0)
-        demo_gesture = (demo_gesture + 1) % 10;
+        demo_gesture = (demo_gesture + 1) % DATASET_LABEL_COUNT;
 
     atomic_store(&ipc->diag->io_pkts_received, demo_pkts);
     atomic_store(&ipc->diag->io_seq_gaps, demo_gaps);
@@ -249,13 +286,24 @@ void demo_tick(IPC_Context *ipc)
         ipc->motor->servo_us[i] =   1500;
 
     atomic_store(&ipc->dsp_export->update_seq, demo_inf_count);
-    ipc->dsp_export->num_classes       = 10;
+    /* Match the real arm.pkl model: 4 alphabetical classes (ext, flex,
+     * hand, rest). IPC_MAX_CLASSES is the IPC buffer size, not the
+     * active class count. */
+    ipc->dsp_export->num_classes       = DATASET_LABEL_COUNT;
     ipc->dsp_export->active_class      = demo_gesture;
     ipc->dsp_export->inference_time_us = 2800;
     snprintf((char *)ipc->dsp_export->gesture_name, IPC_MAX_GESTURE_NAME,
              "%s", CLS_NAMES[demo_gesture]);
-    for(int c = 0; c < 10; c++)
-        ipc->dsp_export->class_confidence[c] = (c == demo_gesture) ? 0.94f : 0.01f;
+    /* Fill the active classes with realistic softmax; zero the unused
+     * IPC slots so a left-over value from a previous schema doesn't
+     * leak through if a renderer ignores num_classes. */
+    for(int c = 0; c < IPC_MAX_CLASSES; c++)
+    {
+        if(c < DATASET_LABEL_COUNT)
+            ipc->dsp_export->class_confidence[c] = (c == demo_gesture) ? 0.94f : 0.02f;
+        else
+            ipc->dsp_export->class_confidence[c] = 0.0f;
+    }
     for(int ch = 0; ch < WL_NUM_CHANNELS; ch++)
         ipc->dsp_export->channel_rms[ch] = 0.28f + 0.04f * (ch % 3);
 }
