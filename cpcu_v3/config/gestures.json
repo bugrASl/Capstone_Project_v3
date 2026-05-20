@@ -61,9 +61,9 @@
                 "ceil_pct": 85
             },
             "hysteresis": {
-                "rest_to_active": 4,
+                "rest_to_active": 3,
                 "active_to_rest": 0,
-                "active_to_active": 6
+                "active_to_active": 3
             },
             "gestures": {
                 "rest": {
@@ -136,9 +136,9 @@
                 "ceil_pct": 85
             },
             "hysteresis": {
-                "rest_to_active": 4,
+                "rest_to_active": 3,
                 "active_to_rest": 0,
-                "active_to_active": 6
+                "active_to_active": 3
             },
             "gestures": {
                 "rest": {
