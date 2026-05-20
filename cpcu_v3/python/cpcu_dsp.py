@@ -780,12 +780,32 @@ class GroupState:
       - per-tick:       conf_pct, class_conf list, last_active class index
     """
 
-    def __init__(self, group_def, prob_thresh=PROB_THRESH):
+    def __init__(self, group_def, prob_thresh=None):
         self.name         = group_def["name"]
         self.gestures     = group_def["gestures"]
         self.emg_channels = group_def["emg_channels"]
         self.model_path   = group_def.get("model_path", "")
-        self.prob_thresh  = prob_thresh
+
+        # Resolve prob_thresh precedence:
+        #   1. Explicit arg (used by tests)
+        #   2. CPCU_PROB_THRESH env (live override without editing files)
+        #   3. gestures.json::gesture_groups.<group>.confidence.floor_pct
+        #   4. Module-level PROB_THRESH default
+        # gestures.json's existing `confidence.floor_pct` (default 40)
+        # IS the vote-gate — it was being read for the confidence
+        # curve but not for the hysteresis prob_thresh. Wire them
+        # together so editing floor_pct actually changes responsiveness.
+        cc_floor_pct = group_def.get("confidence", {}).get("floor_pct")
+        env_override = os.environ.get("CPCU_PROB_THRESH")
+        if prob_thresh is not None:
+            self.prob_thresh = prob_thresh
+        elif env_override:
+            try:    self.prob_thresh = float(env_override)
+            except: self.prob_thresh = PROB_THRESH
+        elif cc_floor_pct is not None:
+            self.prob_thresh = float(cc_floor_pct) / 100.0
+        else:
+            self.prob_thresh = PROB_THRESH
 
         # confidence
         cc                = group_def.get("confidence", {})

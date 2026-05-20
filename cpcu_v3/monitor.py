@@ -189,14 +189,9 @@ state_text = ax_state.text(0.5, 0.82, "WAITING...", ha="center", va="center",
     bbox=dict(facecolor="white", edgecolor="black", boxstyle="round,pad=0.5"))
 conf_text  = ax_state.text(0.5, 0.66, "Confidence: --", ha="center",
     va="center", fontsize=14, transform=ax_state.transAxes)
-
-# Pi-side prediction overlay — shows what cpcu_dsp.py on the Pi
-# predicted (across all groups), updated from "#pred,..." UART
-# comment lines. Lets the AI team A/B compare local-vs-Pi inference
-# without leaving the same CSV stream.
-pi_text = ax_state.text(0.5, 0.58, "Pi: —", ha="center", va="center",
-    fontsize=10, color="#555555", transform=ax_state.transAxes,
-    family="monospace")
+ax_state.text(0.5, 0.95, "Host inference (this PC's model)",
+              ha="center", va="top", fontsize=11, color="#222",
+              fontweight="bold", transform=ax_state.transAxes)
 
 bar_axes = []
 for i, cls in enumerate(CLASSES):
@@ -209,6 +204,55 @@ for i, cls in enumerate(CLASSES):
                        color="steelblue", zorder=2)
     ax_state.add_patch(bg); ax_state.add_patch(fg)
     bar_axes.append(fg)
+
+# ─────────────────────────────────────────────────────────────────────
+# Pi-side group panels — one stack per group, rendered from #pred
+# lines. Layout: stacked below the host-inference panel, sharing the
+# right column. Each group keeps its own dict of {class: Rectangle}
+# so the update loop can set widths in O(1) without rebuilding the
+# patches every frame.
+# ─────────────────────────────────────────────────────────────────────
+PI_GROUPS = ["right_arm", "left_arm"]
+pi_panels = {}        # group_name → dict of widgets we mutate per frame
+
+def build_pi_panel(group_name, y_top):
+    """Render a small classifier-bar panel under the host one. y_top is
+    the upper edge (in axes coords); each panel is 0.30 tall."""
+    title = ax_state.text(0.05, y_top, f"Pi [{group_name}]",
+                          fontsize=11, fontweight="bold",
+                          color="#444", transform=ax_state.transAxes,
+                          va="top")
+    state = ax_state.text(0.50, y_top - 0.04,
+                          "—", ha="center", va="top",
+                          fontsize=14, fontweight="bold",
+                          color="#222", transform=ax_state.transAxes)
+    bars = {}
+    labels = {}
+    n = max(1, len(CLASSES))
+    bar_h  = 0.04
+    bar_gap = 0.005
+    start_y = y_top - 0.10
+    for i, cls in enumerate(CLASSES):
+        y = start_y - i * (bar_h + bar_gap)
+        labels[cls] = ax_state.text(0.05, y + bar_h/2, cls.upper(),
+                                     fontsize=9, va="center",
+                                     transform=ax_state.transAxes)
+        bg = plt.Rectangle((0.30, y), 0.65, bar_h,
+                           transform=ax_state.transAxes,
+                           color="#e8e8e8", zorder=1)
+        fg = plt.Rectangle((0.30, y), 0.0,  bar_h,
+                           transform=ax_state.transAxes,
+                           color="#888", zorder=2)
+        ax_state.add_patch(bg); ax_state.add_patch(fg)
+        bars[cls] = fg
+    return {"title": title, "state": state, "bars": bars, "labels": labels}
+
+# Stacked vertically — host panel keeps the top, Pi panels below.
+# y_top values picked so the three panels share the right column
+# without overlap. If you ever switch to a single-group setup, just
+# pop one entry from PI_GROUPS.
+pi_panels["right_arm"] = build_pi_panel("right_arm", y_top=0.46)
+pi_panels["left_arm"]  = build_pi_panel("left_arm",  y_top=0.21)
 
 
 # ============================================================================
@@ -308,17 +352,25 @@ def update(_frame):
                                      boxstyle="round,pad=0.5"))
             conf_text.set_text(f"Confidence: {conf:.1%}")
 
-        # Update Pi-prediction overlay (independent of host inference rate)
-        if pi_predictions:
-            lines_pi = []
-            for grp, p in pi_predictions.items():
-                cls_str = " ".join(f"{c}:{int(v*100)}"
-                                   for c, v in p["classes"].items())
-                lines_pi.append(f"{grp}: {p['gesture']} {int(p['conf']*100)}%"
-                                + (f"  [{cls_str}]" if cls_str else ""))
-            pi_text.set_text("Pi → " + "  ".join(lines_pi))
-        else:
-            pi_text.set_text("Pi: (no #pred lines received yet)")
+        # Update Pi-side group panels from latest #pred lines. Each
+        # group has its own four bars + a top-line state label. If
+        # there's no data yet, we just show "—".
+        for grp_name, panel in pi_panels.items():
+            p = pi_predictions.get(grp_name)
+            if not p:
+                panel["state"].set_text("—")
+                for cls, bar in panel["bars"].items():
+                    bar.set_width(0.0)
+                continue
+            panel["state"].set_text(
+                f"{p['gesture'].upper()}  {int(p['conf']*100)}%")
+            for cls, bar in panel["bars"].items():
+                v = p["classes"].get(cls, 0.0)
+                if v < 0.0: v = 0.0
+                if v > 1.0: v = 1.0
+                bar.set_width(0.65 * v)
+                # highlight the winning bar
+                bar.set_facecolor("#2c7a2c" if cls == p["gesture"] else "#888")
             for i, cls in enumerate(CLASSES):
                 bar_axes[i].set_width(0.90 * probs[i])
                 bar_axes[i].set_facecolor(
