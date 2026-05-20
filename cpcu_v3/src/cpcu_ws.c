@@ -746,12 +746,22 @@ int main(int argc, char **argv)
         fprintf(stderr, "  mDNS / Bonjour:  http://%s.local:8765\n\n", hn);
     if(!has_wifi && has_usb_tether)
     {
-        fprintf(stderr,
-            "  Pi has no Wi-Fi — phones cannot reach it directly.\n"
-            "  Run this on the HOST PC to forward Pi:8765 to host LAN:\n"
-            "      socat TCP-LISTEN:8765,fork,reuseaddr TCP:%s:8765\n"
-            "  ...then phones browse http://<host_wlan_ip>:8765\n\n",
-            n_usb > 0 ? usb_buf[0] : "<pi_ip>");
+        const char *host_lan = getenv("CPCU_HOST_LAN_IP");
+        if(host_lan && host_lan[0])
+        {
+            fprintf(stderr,
+                "  Phone access (via host PC's socat tunnel):\n"
+                "    http://%s:8765\n\n", host_lan);
+        }
+        else
+        {
+            fprintf(stderr,
+                "  Pi has no Wi-Fi — phones cannot reach it directly.\n"
+                "  Run this on the HOST PC to forward Pi:8765 to host LAN:\n"
+                "      socat TCP-LISTEN:8765,fork,reuseaddr TCP:%s:8765\n"
+                "  ...then phones browse http://<host_wlan_ip>:8765\n\n",
+                n_usb > 0 ? usb_buf[0] : "<pi_ip>");
+        }
     }
     fprintf(stderr,
         "  Endpoints:\n"
