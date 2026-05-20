@@ -673,7 +673,7 @@ cleanup() {
     # Sweep any temp kernel-holder scripts this PID created — they're
     # named /tmp/cpcu_kernel_holder.XXXXXX.sh and only valid while the
     # tmux session is alive. Best-effort; non-fatal if they're gone.
-    rm -f /tmp/cpcu_kernel_holder.*.sh 2>/dev/null || true
+    rm -f /tmp/cpcu_kernel_holder.*.sh /tmp/cpcu_ws_holder.*.sh 2>/dev/null || true
     kernel_stop_background_fallback
 }
 trap cleanup EXIT INT TERM
@@ -960,7 +960,7 @@ run_tui_tmux() {
         ws_log=$(make_log_path "ws")
         pi_ip=$(hostname -I | awk '{print $1}')
         write_ws_info
-        tmux_add_window "WS" "bash -c '$(ws_window_cmd) 2>&1 | tee -a ${ws_log}'"
+        tmux_add_window "WS" "$(ws_window_cmd) 2>&1 | tee -a ${ws_log}"
         log "═══════════════════════════════════════════════════"
         log "Web dashboard:"
         log "  Same network:  http://${pi_ip}:8765"
@@ -998,7 +998,7 @@ run_collect_tmux() {
         local ws_log
         ws_log=$(make_log_path "ws")
         write_ws_info
-        tmux_add_window "WS" "bash -c '$(ws_window_cmd) 2>&1 | tee -a ${ws_log}'"
+        tmux_add_window "WS" "$(ws_window_cmd) 2>&1 | tee -a ${ws_log}"
         log "Web dashboard at http://$(hostname -I | awk '{print $1}'):8765"
     fi
 
@@ -1036,7 +1036,7 @@ run_signal_tmux() {
         local ws_log
         ws_log=$(make_log_path "ws")
         write_ws_info
-        tmux_add_window "WS" "bash -c '$(ws_window_cmd) 2>&1 | tee -a ${ws_log}'"
+        tmux_add_window "WS" "$(ws_window_cmd) 2>&1 | tee -a ${ws_log}"
         log "Web dashboard at http://$(hostname -I | awk '{print $1}'):8765"
     fi
     log "Logs: ${LOG_DIR}/"
@@ -1108,12 +1108,15 @@ with_ws_preflight() {
 ws_window_cmd() {
     local sd
     sd="$(ws_static_dir)"
-    # Banner prints first so anyone tabbing to the WS pane sees the
-    # LAN URLs (for sharing on Wi-Fi) and the local loopback URL (for
-    # testing from a browser on the Pi itself) before cpcu_ws's own
-    # startup logs. The Pi's hostname-I output is computed inside the
-    # bash subshell so this stays current across DHCP renewals.
-    cat <<'BANNER_EOF'
+    # Write the WS holder script to a temp file and echo just the path.
+    # This avoids nested-quote breakage: the banner contains single
+    # quotes (e.g. awk '{print $1}'), which would terminate the outer
+    # `bash -c '...'` string early and crash the WS window before tmux
+    # could capture it. Same fix pattern as the kernel holder.
+    local ws_script
+    ws_script=$(mktemp /tmp/cpcu_ws_holder.XXXXXX.sh)
+    cat > "${ws_script}" << WSHOLDER_EOF
+#!/bin/bash
 echo "════════════════════════════════════════════════════════════"
 echo "  CPCU WEB DASHBOARD — http server (cpcu_ws)"
 echo "════════════════════════════════════════════════════════════"
@@ -1122,37 +1125,33 @@ echo "  Open in a browser on this Pi:"
 echo "    http://localhost:8765"
 echo "    http://127.0.0.1:8765"
 echo
-# Classify each IP. 10.42.x is the default range for systemd-networkd /
-# NetworkManager Internet-Sharing over USB-Ethernet — i.e. only the
-# host PC can reach the Pi directly. We point that out so the user
-# knows to use the host-side socat tunnel (see `pi web` alias on host).
 has_wifi=0
 has_usb_tether=0
-for ip in $(hostname -I 2>/dev/null); do
-    case "$ip" in
+for ip in \$(hostname -I 2>/dev/null); do
+    case "\$ip" in
         *:*|127.*|169.254.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*)
             ;;
         10.42.*)
             echo "  USB-tether link (host PC only):"
-            echo "    http://$ip:8765   (only the host PC can reach this)"
+            echo "    http://\$ip:8765   (only the host PC can reach this)"
             has_usb_tether=1
             ;;
         *)
-            if [ "$has_wifi" = 0 ]; then
+            if [ "\$has_wifi" = 0 ]; then
                 echo "  Share with teammates on the same Wi-Fi:"
                 has_wifi=1
             fi
-            echo "    http://$ip:8765"
+            echo "    http://\$ip:8765"
             ;;
     esac
 done
-host="$(hostname 2>/dev/null)"
-[ -n "$host" ] && echo "  mDNS / Bonjour:    http://$host.local:8765"
-if [ "$has_wifi" = 0 ] && [ "$has_usb_tether" = 1 ]; then
+host="\$(hostname 2>/dev/null)"
+[ -n "\$host" ] && echo "  mDNS / Bonjour:    http://\$host.local:8765"
+if [ "\$has_wifi" = 0 ] && [ "\$has_usb_tether" = 1 ]; then
     echo
     echo "  Pi has no Wi-Fi — phones cannot reach it directly."
     echo "  Run this on the HOST PC to forward Pi:8765 to host LAN:"
-    echo "      socat TCP-LISTEN:8765,fork,reuseaddr TCP:\$(hostname -I | awk '{print \$1}' | tr -d ' '):8765"
+    echo "      socat TCP-LISTEN:8765,fork,reuseaddr TCP:<pi_ip>:8765"
     echo "  ...then phones browse http://<host_wlan_ip>:8765"
 fi
 echo
@@ -1161,8 +1160,10 @@ echo "  /                 — main dashboard"
 echo "  Press Ctrl-b 1 to switch back to SHELL pane, Ctrl-b d to detach."
 echo "════════════════════════════════════════════════════════════"
 echo
-BANNER_EOF
-    echo "${BIN_DIR}/cpcu_ws --static ${sd}"
+exec "${BIN_DIR}/cpcu_ws" --static "${sd}"
+WSHOLDER_EOF
+    chmod +x "${ws_script}"
+    echo "${ws_script}"
 }
 
 # Demo variant: signal_testbench --demo. Generates synthetic 100 Hz
