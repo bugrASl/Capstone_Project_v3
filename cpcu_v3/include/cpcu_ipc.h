@@ -6,7 +6,7 @@
  *
  *  Layout:
  *    Offset 0        192 B   IPC_ControlBlock (system state, heartbeats, edit-mode)
- *    Offset 192      64 KB   IPC_SensorEntry[1024] (SPSC ring buffer)
+ *    Offset 192      256 KB  IPC_SensorEntry[4096] (SPSC ring buffer)
  *    Offset 65728    128 B   IPC_MotorCommand (seqlock-protected servo targets)
  *    Offset 65856    128 B   IPC_Diagnostics (atomic counters)
  *    Offset 65984    256 B   IPC_DSPExport (gesture, confidence, RMS)
@@ -33,7 +33,7 @@ extern "C" {
 #define IPC_MAGIC               0x494E4654UL    /* "INFT" - Infinitech */
 #define IPC_VERSION             0x0300  /* v3.0 */          /* added IPC_ToolPresence + IPC_DspFiltered for web bridge */
 
-#define IPC_SENSOR_RING_SIZE    1024
+#define IPC_SENSOR_RING_SIZE    4096
 #define IPC_SENSOR_RING_MASK    (IPC_SENSOR_RING_SIZE - 1)
 #define IPC_NUM_SERVOS          6
 

@@ -11,7 +11,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
-#include <string.h>             /* memcpy used by tui_lat_u32 inline */
 
 #include "cpcu_ipc.h"
 #include "wireless_packet.h"
@@ -34,7 +33,7 @@
 
 #define TUI_MIN_WIDTH       72
 #define TUI_MIN_HEIGHT      24
-#define REFRESH_US          100000      /* 10 Hz */
+#define REFRESH_US          33333       /* 30 Hz */
 
 /* IO heartbeat thresholds (relative to cpcu_io's HEARTBEAT_INTERVAL_US =
  * 100 ms; see comment block in cpcu_tui_render.c). */
@@ -147,66 +146,6 @@ extern bool  wave_detail;
 extern uint16_t  wave_buf[WL_NUM_CHANNELS][WAVE_BUF_SIZE];
 extern uint32_t  wave_count;
 extern uint32_t  wave_wr;
-
-/*============= END-TO-END LATENCY ACCESSORS ===============================================*/
-/*
- *  cpcu_dsp.py publishes per-tick latency measurements into the
- *  IPC_DSPExport.padding region. These offsets MUST stay in sync with
- *  cpcu_ipc_bridge.py's EXPORT_* constants:
- *      EXPORT_PKT_LATENCY  = 100   uint32  packet rx → servo write   (µs)
- *      EXPORT_SEQ_AGE      = 104   uint32  oldest seq age in window  (pkts)
- *      EXPORT_RING_DWELL   = 108   uint32  IPC ring drain time       (µs)
- *      EXPORT_DSP_US       = 112   uint32  DSP compute + inference   (µs)
- *      EXPORT_HYST_CONSEC  = 116   uint8   debounce counter
- *      EXPORT_HYST_NEEDED  = 117   uint8   debounce threshold
- *      EXPORT_HYST_TYPE    = 118   uint8   0=r2a, 1=a2r, 2=a2a
- *
- *  IPC_DSPExport's first 100 bytes are typed fields (channel_rms, gesture
- *  name, class_confidence, num_classes, active_class, inference_time_us,
- *  update_seq). Bytes 100-231 are _pad1[132]. We reach into the padding
- *  via a uint8_t* view + offset to stay within strict-aliasing rules.
- *
- *  All values are 0 until cpcu_dsp.py publishes for the first time, so
- *  callers should check (val != 0) before colouring as "valid".
- */
-#define TUI_LAT_OFF_PKT_TO_SERVO    100
-#define TUI_LAT_OFF_SEQ_AGE         104
-#define TUI_LAT_OFF_RING_DWELL      108
-#define TUI_LAT_OFF_DSP_COMPUTE     112
-#define TUI_LAT_OFF_HYST_CONSEC     116
-#define TUI_LAT_OFF_HYST_NEEDED     117
-#define TUI_LAT_OFF_HYST_TYPE       118
-
-static inline uint32_t tui_lat_u32(const IPC_DSPExport *e, size_t off)
-{
-    if(!e) return 0;
-    uint32_t v;
-    memcpy(&v, ((const uint8_t *)e) + off, sizeof(v));
-    return v;
-}
-
-static inline uint32_t tui_lat_pkt_to_servo_us (const IPC_DSPExport *e)
-{ return tui_lat_u32(e, TUI_LAT_OFF_PKT_TO_SERVO); }
-
-static inline uint32_t tui_lat_seq_age         (const IPC_DSPExport *e)
-{ return tui_lat_u32(e, TUI_LAT_OFF_SEQ_AGE); }
-
-static inline uint32_t tui_lat_ring_dwell_us   (const IPC_DSPExport *e)
-{ return tui_lat_u32(e, TUI_LAT_OFF_RING_DWELL); }
-
-static inline uint32_t tui_lat_dsp_compute_us  (const IPC_DSPExport *e)
-{ return tui_lat_u32(e, TUI_LAT_OFF_DSP_COMPUTE); }
-
-/* Constants matching cpcu_dsp.py's hardware-latency budget (per-segment
- * datasheet/wall-clock estimates). These are the values shown in the
- * "constant" rows of the waterfall — they don't change per tick. */
-#define TUI_LAT_ADC_PACK_US         226u    /* STM32 ADC + WL_Pack */
-#define TUI_LAT_WIRELESS_US         332u    /* NRF24L01+ ESB TX+ACK */
-#define TUI_LAT_SPI_UNPACK_US        36u    /* CPCU SPI rx + Unpack */
-#define TUI_LAT_SMOOTHER_I2C_US     610u    /* SMOOTH_Update + I²C */
-#define TUI_LAT_SERVO_MECH_US     15000u    /* SG90 mechanical */
-#define TUI_LAT_TRANSPORT_US                                            \
-        (TUI_LAT_ADC_PACK_US + TUI_LAT_WIRELESS_US + TUI_LAT_SPI_UNPACK_US)
 
 /*============= IO HEARTBEAT THRESHOLDS — see top of file ==================================*/
 
