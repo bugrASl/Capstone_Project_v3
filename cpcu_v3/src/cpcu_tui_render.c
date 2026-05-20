@@ -87,6 +87,26 @@ const uint16_t  SERVO_MAX[]     =   { 2500, 1953, 1953, 2002, 2002, 1733 };
 /* Re-read /tmp/cpcu_servo_names.txt — one servo name per line, sorted
  * by pca_ch. Idempotent and cheap; called on every page-draw of the
  * pages that print servo names (DSP/AI, CONFIG, OVERVIEW). */
+/* Pretty-print a microsecond value into a caller-supplied buffer.
+ * Picks µs / ms / s automatically based on magnitude:
+ *
+ *      0 .. 9999      → "1234 us"
+ *      10 ms .. 9.9 s → "12.3 ms"
+ *      ≥ 10 s         → "12.3 s"
+ *
+ * The fixed-width format keeps columns aligned without padding. Used
+ * everywhere the latency table prints a single duration. */
+static const char *fmt_time_us(uint64_t us, char buf[32])
+{
+    if(us < 10000ULL)
+        snprintf(buf, 32, "%5llu us",   (unsigned long long)us);
+    else if(us < 10ULL * 1000ULL * 1000ULL)
+        snprintf(buf, 32, "%5.1f ms",   us / 1000.0);
+    else
+        snprintf(buf, 32, "%5.2f s",    us / 1000000.0);
+    return buf;
+}
+
 static void tui_reload_servo_names(void)
 {
     FILE *f = fopen("/tmp/cpcu_servo_names.txt", "r");
@@ -662,6 +682,7 @@ void draw_page_overview(int r, IPC_Context *ipc,
                                uint32_t up_h, uint32_t up_m, uint32_t up_s)
 {
     tui_reload_servo_names();
+    char _ftb[32];
     uint8_t  sys_state  =   atomic_load(&ipc->ctrl->system_state);
     uint8_t  io_rdy     =   atomic_load(&ipc->ctrl->io_ready);
     uint8_t  dsp_rdy    =   atomic_load(&ipc->ctrl->dsp_ready);
@@ -868,7 +889,7 @@ void draw_page_overview(int r, IPC_Context *ipc,
         r++;
         mvprintw(r, LAT_LBL_COL, "ADC + WL_Pack");
         attron(COLOR_PAIR(CP_CYAN));
-        mvprintw(r, LAT_VAL_COL, "%6u us", TUI_LAT_ADC_PACK_US);
+        mvprintw(r, LAT_VAL_COL, "%9s", fmt_time_us(TUI_LAT_ADC_PACK_US, _ftb));
         attroff(COLOR_PAIR(CP_CYAN));
         attron(COLOR_PAIR(CP_DIM));
         mvprintw(r, LAT_TAG_COL, "(const)");
@@ -877,7 +898,7 @@ void draw_page_overview(int r, IPC_Context *ipc,
         r++;
         mvprintw(r, LAT_LBL_COL, "Wireless TX + ACK");
         attron(COLOR_PAIR(CP_CYAN));
-        mvprintw(r, LAT_VAL_COL, "%6u us", TUI_LAT_WIRELESS_US);
+        mvprintw(r, LAT_VAL_COL, "%9s", fmt_time_us(TUI_LAT_WIRELESS_US, _ftb));
         attroff(COLOR_PAIR(CP_CYAN));
         attron(COLOR_PAIR(CP_DIM));
         mvprintw(r, LAT_TAG_COL, "(const)");
@@ -886,7 +907,7 @@ void draw_page_overview(int r, IPC_Context *ipc,
         r++;
         mvprintw(r, LAT_LBL_COL, "subtotal");
         attron(COLOR_PAIR(CP_GOOD) | A_BOLD);
-        mvprintw(r, LAT_VAL_COL, "%6u us", bsau_const);
+        mvprintw(r, LAT_VAL_COL, "%9s", fmt_time_us(bsau_const, _ftb));
         attroff(COLOR_PAIR(CP_GOOD) | A_BOLD);
         attron(COLOR_PAIR(CP_DIM));
         mvprintw(r, LAT_TAG_COL, "(sum)");
@@ -903,25 +924,24 @@ void draw_page_overview(int r, IPC_Context *ipc,
             int cp_pkt = (lat_pkt_us > 100000) ? CP_WARN : CP_GOOD;
             mvprintw(r, LAT_LBL_COL, "pkt → motor IPC");
             attron(COLOR_PAIR(cp_pkt) | A_BOLD);
-            mvprintw(r, LAT_VAL_COL, "%6u us", lat_pkt_us);
+            mvprintw(r, LAT_VAL_COL, "%9s", fmt_time_us(lat_pkt_us, _ftb));
             attroff(COLOR_PAIR(cp_pkt) | A_BOLD);
             attron(COLOR_PAIR(CP_DIM));
             mvprintw(r, LAT_TAG_COL, "(meas)");
-            mvprintw(r, LAT_DESC_COL, "rx_time_us → motor cmd write  (%.1f ms)",
-                     lat_pkt_us / 1000.0f);
+            mvprintw(r, LAT_DESC_COL, "rx_time_us → motor cmd write");
             attroff(COLOR_PAIR(CP_DIM));
             r++;
             /* sub-rows: indent label by 2 to nest visually */
             mvprintw(r, LAT_LBL_COL + 2, "- SPI unpack");
             attron(COLOR_PAIR(CP_DIM));
-            mvprintw(r, LAT_VAL_COL, "%6u us", TUI_LAT_SPI_UNPACK_US);
+            mvprintw(r, LAT_VAL_COL, "%9s", fmt_time_us(TUI_LAT_SPI_UNPACK_US, _ftb));
             mvprintw(r, LAT_TAG_COL, "(in meas)");
             mvprintw(r, LAT_DESC_COL, "NRF SPI read + WL_Unpack + IPC ring push");
             attroff(COLOR_PAIR(CP_DIM));
             r++;
             mvprintw(r, LAT_LBL_COL + 2, "- Ring dwell");
             attron(COLOR_PAIR(CP_CYAN));
-            mvprintw(r, LAT_VAL_COL, "%6u us", lat_dwell);
+            mvprintw(r, LAT_VAL_COL, "%9s", fmt_time_us(lat_dwell, _ftb));
             attroff(COLOR_PAIR(CP_CYAN));
             attron(COLOR_PAIR(CP_DIM));
             mvprintw(r, LAT_TAG_COL, "(in meas)");
@@ -931,7 +951,7 @@ void draw_page_overview(int r, IPC_Context *ipc,
             int cp_dsp = (lat_dsp > 50000) ? CP_WARN : CP_CYAN;
             mvprintw(r, LAT_LBL_COL + 2, "- DSP compute");
             attron(COLOR_PAIR(cp_dsp));
-            mvprintw(r, LAT_VAL_COL, "%6u us", lat_dsp);
+            mvprintw(r, LAT_VAL_COL, "%9s", fmt_time_us(lat_dsp, _ftb));
             attroff(COLOR_PAIR(cp_dsp));
             attron(COLOR_PAIR(CP_DIM));
             mvprintw(r, LAT_TAG_COL, "(in meas)");
@@ -959,7 +979,7 @@ void draw_page_overview(int r, IPC_Context *ipc,
         r++;
         mvprintw(r, LAT_LBL_COL, "Smoother + I²C");
         attron(COLOR_PAIR(CP_CYAN));
-        mvprintw(r, LAT_VAL_COL, "%6u us", TUI_LAT_SMOOTHER_I2C_US);
+        mvprintw(r, LAT_VAL_COL, "%9s", fmt_time_us(TUI_LAT_SMOOTHER_I2C_US, _ftb));
         attroff(COLOR_PAIR(CP_CYAN));
         attron(COLOR_PAIR(CP_DIM));
         mvprintw(r, LAT_TAG_COL, "(const)");
@@ -968,7 +988,7 @@ void draw_page_overview(int r, IPC_Context *ipc,
         r++;
         mvprintw(r, LAT_LBL_COL, "Servo mechanical");
         attron(COLOR_PAIR(CP_CYAN));
-        mvprintw(r, LAT_VAL_COL, "%6u us", TUI_LAT_SERVO_MECH_US);
+        mvprintw(r, LAT_VAL_COL, "%9s", fmt_time_us(TUI_LAT_SERVO_MECH_US, _ftb));
         attroff(COLOR_PAIR(CP_CYAN));
         attron(COLOR_PAIR(CP_DIM));
         mvprintw(r, LAT_TAG_COL, "(const)");
@@ -977,7 +997,7 @@ void draw_page_overview(int r, IPC_Context *ipc,
         r++;
         mvprintw(r, LAT_LBL_COL, "subtotal");
         attron(COLOR_PAIR(CP_GOOD) | A_BOLD);
-        mvprintw(r, LAT_VAL_COL, "%6u us", srvo_const);
+        mvprintw(r, LAT_VAL_COL, "%9s", fmt_time_us(srvo_const, _ftb));
         attroff(COLOR_PAIR(CP_GOOD) | A_BOLD);
         attron(COLOR_PAIR(CP_DIM));
         mvprintw(r, LAT_TAG_COL, "(sum)");
@@ -1565,9 +1585,12 @@ void draw_page_dsp(int r, IPC_Context *ipc)
             mvprintw(r, 3, "┌─ BSAU ────────────────────────────────────");
             attroff(COLOR_PAIR(CP_DIM));
             r++;
-            draw_lv(r, 3, "│ ADC + pack:",   CP_DIM, "%5u us  (const)", TUI_LAT_ADC_PACK_US);
+            char tb[32];
+            draw_lv(r, 3, "│ ADC + pack:",   CP_DIM, "%s  (const)",
+                    fmt_time_us(TUI_LAT_ADC_PACK_US, tb));
             r++;
-            draw_lv(r, 3, "│ wireless:",     CP_DIM, "%5u us  (const)", TUI_LAT_WIRELESS_US);
+            draw_lv(r, 3, "│ wireless:",     CP_DIM, "%s  (const)",
+                    fmt_time_us(TUI_LAT_WIRELESS_US, tb));
             r++;
             attron(COLOR_PAIR(CP_DIM));
             mvprintw(r, 3, "├─ CPCU ────────────────────────────────────");
@@ -1575,20 +1598,24 @@ void draw_page_dsp(int r, IPC_Context *ipc)
             r++;
             int cp_cpcu = (cpcu_meas > 100000) ? CP_WARN : CP_GOOD;
             draw_lv(r, 3, "│ pkt → motor:",
-                    cp_cpcu, "%5u us  (meas, %.1f ms)", cpcu_meas, cpcu_meas/1000.0f);
+                    cp_cpcu, "%s  (meas)", fmt_time_us(cpcu_meas, tb));
             r++;
-            draw_lv(r, 3, "│   ring dwell:", CP_CYAN, "%5u us  (meas)", lat_dwell);
+            draw_lv(r, 3, "│   ring dwell:", CP_CYAN, "%s  (meas)",
+                    fmt_time_us(lat_dwell, tb));
             r++;
             int cp_dsp = (lat_dsp > 50000) ? CP_WARN : CP_CYAN;
-            draw_lv(r, 3, "│   DSP compute:", cp_dsp, "%5u us  (meas)", lat_dsp);
+            draw_lv(r, 3, "│   DSP compute:", cp_dsp, "%s  (meas)",
+                    fmt_time_us(lat_dsp, tb));
             r++;
-            draw_lv(r, 3, "│ smoother+I²C:", CP_DIM, "%5u us  (const, 50 Hz tick)", smth_const);
+            draw_lv(r, 3, "│ smoother+I²C:", CP_DIM, "%s  (const, 50 Hz tick)",
+                    fmt_time_us(smth_const, tb));
             r++;
             attron(COLOR_PAIR(CP_DIM));
             mvprintw(r, 3, "└─ SERVO ───────────────────────────────────");
             attroff(COLOR_PAIR(CP_DIM));
             r++;
-            draw_lv(r, 3, "  mechanical:",  CP_DIM, "%5u us  (const, SG90)", srvo_const);
+            draw_lv(r, 3, "  mechanical:",  CP_DIM, "%s  (const, SG90)",
+                    fmt_time_us(srvo_const, tb));
             r++;
 
             /* Seq-age is a sanity check: oldest packet in the inference
