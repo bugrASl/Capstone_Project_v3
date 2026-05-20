@@ -38,7 +38,7 @@ static void test_valid_full(void)
 {
     const char *json =
         "{\n"
-        "  \"schema_version\": 1,\n"
+        "  \"schema_version\": 2,\n"
         "  \"servo_min_us\": [498, 1074, 1074, 1001, 1001, 976],\n"
         "  \"servo_max_us\": [2500, 1953, 1953, 2002, 2002, 1733],\n"
         "  \"servo_bias_us\": [0, 5, -3, 0, 0, 0],\n"
@@ -62,7 +62,7 @@ static void test_valid_full(void)
     CHECK("TB-CFG01b", "magic populated",
           cfg.magic == IPC_CFG_VALID_MAGIC, "got 0x%x", cfg.magic);
     CHECK("TB-CFG01c", "schema_version captured",
-          cfg.schema_version == 1, "got %u", cfg.schema_version);
+          cfg.schema_version == 2, "got %u", cfg.schema_version);
     CHECK("TB-CFG01d", "servo_min_us[0]=498",
           cfg.servo_min_us[0] == 498, "got %u", cfg.servo_min_us[0]);
     CHECK("TB-CFG01e", "servo_max_us[5]=1733",
@@ -87,8 +87,8 @@ static void test_defaults(void)
     CFG_Defaults(&cfg);
     CHECK("TB-CFG02a", "default magic set",
           cfg.magic == IPC_CFG_VALID_MAGIC, "");
-    CHECK("TB-CFG02b", "default schema_version=1",
-          cfg.schema_version == 1, "");
+    CHECK("TB-CFG02b", "default schema_version=2",
+          cfg.schema_version == 2, "");
     CHECK("TB-CFG02c", "default servo_min_us[0]=498",
           cfg.servo_min_us[0] == 498, "got %u", cfg.servo_min_us[0]);
     CHECK("TB-CFG02d", "default deadband=10",
@@ -144,7 +144,7 @@ static void test_out_of_range(void)
 {
     const char *json =
         "{\n"
-        "  \"schema_version\": 1,\n"
+        "  \"schema_version\": 2,\n"
         "  \"servo_min_us\": [498, 1074, 1074, 1001, 1001, 976],\n"
         "  \"servo_max_us\": [2500, 1953, 1953, 2002, 2002, 9999]\n"
         "}\n";
@@ -163,7 +163,7 @@ static void test_min_ge_max(void)
 {
     const char *json =
         "{\n"
-        "  \"schema_version\": 1,\n"
+        "  \"schema_version\": 2,\n"
         "  \"servo_min_us\": [1500, 1074, 1074, 1001, 1001, 976],\n"
         "  \"servo_max_us\": [1499, 1953, 1953, 2002, 2002, 1733]\n"
         "}\n";
@@ -184,7 +184,7 @@ static void test_optional_present(void)
 {
     const char *json =
         "{\n"
-        "  \"schema_version\": 1,\n"
+        "  \"schema_version\": 2,\n"
         "  \"servo_min_us\": [498, 1074, 1074, 1001, 1001, 976],\n"
         "  \"servo_max_us\": [2500, 1953, 1953, 2002, 2002, 1733],\n"
         "  \"grip_firm_us\": 1050,\n"
@@ -210,7 +210,7 @@ static void test_optional_absent(void)
     /* Minimal file: only the required fields. */
     const char *json =
         "{\n"
-        "  \"schema_version\": 1,\n"
+        "  \"schema_version\": 2,\n"
         "  \"servo_min_us\": [498, 1074, 1074, 1001, 1001, 976],\n"
         "  \"servo_max_us\": [2500, 1953, 1953, 2002, 2002, 1733]\n"
         "}\n";
@@ -236,7 +236,7 @@ static void test_patch_round_trip(void)
      * targeted arrays and leave the nested object alone. */
     const char *json =
         "{\n"
-        "  \"schema_version\": 1,\n"
+        "  \"schema_version\": 2,\n"
         "  \"servo_min_us\": [498, 1074, 1074, 1001, 1001, 976],\n"
         "  \"servo_max_us\": [2500, 1953, 1953, 2002, 2002, 1733],\n"
         "  \"servo_bias_us\": [0, 0, 0, 0, 0, 0],\n"
@@ -303,7 +303,7 @@ static void test_patch_errors(void)
     /* Missing key returns CFG_ERR_MISSING. */
     const char *json =
         "{\n"
-        "  \"schema_version\": 1,\n"
+        "  \"schema_version\": 2,\n"
         "  \"servo_min_us\": [498, 1074, 1074, 1001, 1001, 976],\n"
         "  \"servo_max_us\": [2500, 1953, 1953, 2002, 2002, 1733]\n"
         "}\n";

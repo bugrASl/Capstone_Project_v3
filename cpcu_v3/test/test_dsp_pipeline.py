@@ -213,9 +213,9 @@ def test_extract_features():
 
     ASSERT(isinstance(feat, list),
            f"return type is list (got {type(feat).__name__})")
-    ASSERT(len(feat) == 4,
-           f"feature count = {len(feat)} (expected 4)")
-    rms, var, wl, em    =   feat
+    ASSERT(len(feat) == 7,
+           f"feature count = {len(feat)} (expected 7: rms,var,wl,env_mean,mav,zc,ssc)")
+    rms, var, wl, em, mav, zc, ssc = feat
 
     ASSERT(0.30 < rms < 0.40,
            f"rms = {rms:.4f} ≈ 0.354 (sine amplitude 0.5)")
@@ -225,6 +225,12 @@ def test_extract_features():
            f"wl = {wl:.6f} > 0")
     ASSERT(em > 0,
            f"env_mean = {em:.6f} > 0")
+    ASSERT(mav > 0,
+           f"mav = {mav:.6f} > 0")
+    ASSERT(zc >= 0,
+           f"zc = {zc} >= 0 (zero crossings)")
+    ASSERT(ssc >= 0,
+           f"ssc = {ssc} >= 0 (slope-sign changes)")
 
 
 def test_features_scale_with_amplitude():
@@ -271,8 +277,8 @@ def test_process_window():
            f"cleaned length = {len(cleaned)} == WINDOW_LO ({WINDOW_LO})")
     ASSERT(len(env) == WINDOW_LO,
            f"env length = {len(env)} == WINDOW_LO ({WINDOW_LO})")
-    ASSERT(len(feat) == 4,
-           f"feature count = {len(feat)} (expected 4)")
+    ASSERT(len(feat) == 7,
+           f"feature count = {len(feat)} (expected 7)")
 
     # The 50 Hz line should be largely gone after the notch.
     # Compare RMS of the cleaned signal to the input — expect attenuation

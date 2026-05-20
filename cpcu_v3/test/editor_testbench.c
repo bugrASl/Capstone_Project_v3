@@ -47,7 +47,7 @@ static char *write_runtime_json(void)
     if(fd < 0) { perror("mkstemps"); exit(1); }
     const char *content =
         "{\n"
-        "  \"schema_version\": 1,\n"
+        "  \"schema_version\": 2,\n"
         "  \"servo_min_us\": [498, 1074, 1074, 1001, 1001, 976],\n"
         "  \"servo_max_us\": [2500, 1953, 1953, 2002, 2002, 1733],\n"
         "  \"servo_bias_us\": [0, 0, 0, 0, 0, 0],\n"
@@ -74,39 +74,13 @@ static char *write_runtime_json(void)
  *
  * Solution: temporarily rename /opt/cpcu/config.json to a sibling
  * .test_backup name for the duration of the test, then restore on
- * exit. The config/runtime.json symlink is created in a SANDBOX
- * tempdir (not the project root!) so a test run can't ever wipe the
- * operator's real config/runtime.json. The sandbox dir is created on
- * first install_runtime_json call and removed at exit.
+ * exit. Combined with a config/runtime.json symlink in the cwd
+ * pointing at our temp file, this guarantees the editor reads what
+ * the test wrote.
  */
 static const char *g_opt_cfg_path        = "/opt/cpcu/config.json";
 static const char *g_opt_cfg_backup_path = "/opt/cpcu/config.json.test_backup";
 static int         g_opt_cfg_was_moved   = 0;
-
-/* Sandbox directory created by mkdtemp(). When set, all path-relative
- * operations (config/runtime.json) happen inside it. Saved+restored
- * around chdir so we can find our way home for cleanup. */
-static char  g_sandbox_dir[256]    = {0};
-static char  g_orig_cwd[256]       = {0};
-
-static void cleanup_sandbox(void)
-{
-    /* This runs from atexit, possibly from a different working dir
-     * than where we started. Best-effort cleanup: chdir back home
-     * first, then nuke the sandbox subtree by absolute path. */
-    if(g_orig_cwd[0])
-        (void)chdir(g_orig_cwd);
-    if(g_sandbox_dir[0])
-    {
-        char p[512];
-        snprintf(p, sizeof(p), "%s/config/runtime.json", g_sandbox_dir);
-        unlink(p);
-        snprintf(p, sizeof(p), "%s/config", g_sandbox_dir);
-        rmdir(p);
-        rmdir(g_sandbox_dir);
-        g_sandbox_dir[0] = '\0';
-    }
-}
 
 static void restore_opt_cpcu_config(void)
 {
@@ -142,29 +116,7 @@ static void install_runtime_json(const char *src)
         }
     }
 
-    /* Create a sandbox tempdir on first call and chdir into it so all
-     * config/* operations stay isolated from the project tree. Without
-     * this, the test's `unlink("config/runtime.json")` at exit would
-     * delete the operator's real runtime.json from the repo. */
-    if(!g_sandbox_dir[0])
-    {
-        if(!getcwd(g_orig_cwd, sizeof(g_orig_cwd)))
-        {
-            perror("getcwd"); exit(1);
-        }
-        strcpy(g_sandbox_dir, "/tmp/editor_test_sandbox_XXXXXX");
-        if(!mkdtemp(g_sandbox_dir))
-        {
-            perror("mkdtemp"); exit(1);
-        }
-        atexit(cleanup_sandbox);
-        if(chdir(g_sandbox_dir) != 0)
-        {
-            perror("chdir(sandbox)"); exit(1);
-        }
-    }
-
-    /* Build a config/runtime.json in (sandbox) CWD as the second-tier lookup. */
+    /* Build a config/runtime.json in CWD as the second-tier lookup. */
     int rc = mkdir("config", 0755);
     (void)rc;       /* ok if exists */
     unlink("config/runtime.json");
@@ -369,13 +321,10 @@ int main(void)
     test_esc_cancels();
     test_save_roundtrip();
 
-    /* Cleanup: tmp runtime.json. The sandbox dir's config/runtime.json
-     * symlink and the sandbox dir itself are torn down by the
-     * cleanup_sandbox atexit handler, so we don't touch them here —
-     * deleting them now would also be safe (the sandbox is /tmp/...)
-     * but the atexit path runs reliably even if a test failure forced
-     * an early exit. */
+    /* Cleanup */
     unlink(g_tmp_path);
+    unlink("config/runtime.json");
+    rmdir("config");
 
     printf("\n======================================\n");
     printf("RESULTS: %d PASS, %d FAIL\n", g_pass, g_fail);
