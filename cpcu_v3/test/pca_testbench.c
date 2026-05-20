@@ -85,88 +85,46 @@ static void layout_update(void)
 }
 
 /*============= SERVO NAMES ================================================================*/
-/*
- *  Servo labels are kept in two layers:
- *
- *    DEFAULT_SERVO_NAMES   compile-time fallback. Used when no --names flag
- *                          is given and no gestures.json is reachable. Keeps
- *                          the testbench usable as a pure standalone tool.
- *
- *    g_servo_names[]       runtime pointers. Populated either from
- *                          DEFAULT_SERVO_NAMES at startup, or overridden by
- *                          --names "A,B,C,D,E,F" coming from launch.sh.
- *                          launch.sh extracts these from gestures.json's
- *                          servo_channels block (sorted by pca_ch) so the
- *                          TUI always shows the user's current servo names,
- *                          not stale compile-time strings.
- *
- *    g_name_storage[]      backing storage when --names was used; the parsed
- *                          tokens are written here and g_servo_names is
- *                          pointed into this buffer.
- *
- *  This is what makes test-pca "config-aware": no rebuild required when the
- *  user runs ./launch.sh rename-motor — the next run sees the new name.
- */
 
-#define SERVO_NAME_MAX  32      /* per-servo label, incl. trailing NUL */
-
-static const char *DEFAULT_SERVO_NAMES[PCA_SERVO_COUNT] =
+/* Mutable name buffer — populated at startup from /tmp/cpcu_servo_names.txt
+ * (written by launch.sh preflight) so the testbench shows the actual
+ * names from gestures.json instead of the compile-time defaults below. */
+static char        g_servo_name_buf[PCA_SERVO_COUNT][32] = {
+    "S0 MG995 Base   ",
+    "S1 MG995 Upper  ",
+    "S2 MG995 Last   ",
+    "S3 SG90  Joint-1",
+    "S4 SG90  Joint-2",
+    "S5 SG90  Gripper",
+};
+static const char *SERVO_NAMES[PCA_SERVO_COUNT] =
 {
-    "S0 Base   ",
-    "S1 Elbow  ",
-    "S2 Forearm",
-    "S3 Wrist1 ",
-    "S4 Wrist2 ",
-    "S5 Gripper",
+    g_servo_name_buf[0], g_servo_name_buf[1], g_servo_name_buf[2],
+    g_servo_name_buf[3], g_servo_name_buf[4], g_servo_name_buf[5],
 };
 
-static char  g_name_storage[PCA_SERVO_COUNT][SERVO_NAME_MAX];
-static const char *g_servo_names[PCA_SERVO_COUNT] = {
-    NULL, NULL, NULL, NULL, NULL, NULL,
-};
-
-/* Resolve display name for a servo, with default fallback. */
-static const char *servo_name(int idx)
+/* Refresh names from /tmp/cpcu_servo_names.txt (one per line, sorted
+ * by pca_ch). Called once at startup; failure is silent (keeps the
+ * compile-time defaults above). */
+static void load_servo_names_from_tmp(void)
 {
-    if(idx < 0 || idx >= PCA_SERVO_COUNT) return "?";
-    return g_servo_names[idx] ? g_servo_names[idx] : DEFAULT_SERVO_NAMES[idx];
-}
-
-/* Initialise the runtime name pointers to the compile-time defaults so
- * legacy callers that never set --names keep working. */
-static void servo_names_use_defaults(void)
-{
-    for(int i = 0; i < PCA_SERVO_COUNT; i++)
-        g_servo_names[i] = DEFAULT_SERVO_NAMES[i];
-}
-
-/* Parse a "A,B,C,D,E,F" string into g_name_storage and re-point
- * g_servo_names. Missing tokens leave that slot at its current value, so
- * the user can pass --names "Thumb,,,,,Pinky" to override just two. */
-static int servo_names_apply_csv(const char *csv)
-{
-    if(!csv || !*csv) return 0;
-    int written = 0;
-    int slot    = 0;
-    const char *p = csv;
-    while(*p && slot < PCA_SERVO_COUNT)
+    FILE *f = fopen("/tmp/cpcu_servo_names.txt", "r");
+    if(!f) return;
+    char line[64];
+    int  i = 0;
+    while(i < PCA_SERVO_COUNT && fgets(line, sizeof(line), f))
     {
-        const char *q = p;
-        while(*q && *q != ',') q++;
-        size_t len = (size_t)(q - p);
-        if(len > 0)
-        {
-            if(len >= SERVO_NAME_MAX) len = SERVO_NAME_MAX - 1;
-            memcpy(g_name_storage[slot], p, len);
-            g_name_storage[slot][len] = '\0';
-            g_servo_names[slot]       = g_name_storage[slot];
-            written++;
-        }
-        slot++;
-        if(*q == ',') q++;
-        p = q;
+        size_t L = strlen(line);
+        while(L > 0 && (line[L-1] == '\n' || line[L-1] == '\r'))
+            line[--L] = '\0';
+        if(L == 0) continue;
+        /* Prefix with "S<i> " so the testbench's narrow columns stay
+         * readable when the operator scans for slot indices. */
+        snprintf(g_servo_name_buf[i], sizeof(g_servo_name_buf[i]),
+                 "S%d %s", i, line);
+        i++;
     }
-    return written;
+    fclose(f);
 }
 
 /*============= GLOBALS ====================================================================*/
@@ -664,7 +622,7 @@ static void sc_start(int scenario, int servo)
 
     snprintf(status_line, sizeof(status_line),
              "SCENARIO: %s on %s — running...",
-             SC_DEFS[scenario].name, servo_name(servo));
+             SC_DEFS[scenario].name, SERVO_NAMES[servo]);
     status_until = time(NULL) + (long)sc_total_time + 2;
 }
 
@@ -688,7 +646,7 @@ static void sc_tick(void)
 
         snprintf(status_line, sizeof(status_line),
                  "SCENARIO: %s on %s — done (%.1fs)",
-                 SC_DEFS[sc_index].name, servo_name(sc_servo), elapsed);
+                 SC_DEFS[sc_index].name, SERVO_NAMES[sc_servo], elapsed);
         status_until = time(NULL) + 4;
         sc_active = false;
         return;
@@ -1056,7 +1014,7 @@ static void draw_servo_row(int row, int idx, bool is_selected)
 
     int name_cp = is_selected ? CP_SELECTED : CP_NORMAL;
     attron(COLOR_PAIR(name_cp) | (is_selected ? A_BOLD : 0));
-    mvprintw(row, 3, "%-16s", servo_name(idx));
+    mvprintw(row, 3, "%-16s", SERVO_NAMES[idx]);
     attroff(COLOR_PAIR(name_cp) | (is_selected ? A_BOLD : 0));
 
     draw_slider(row, 21, idx, g_slider_w, is_selected);
@@ -1327,7 +1285,7 @@ static void draw_screen(void)
     draw_hline(r - 1, 0, g_tui_w);
 
     attron(A_BOLD);
-    mvprintw(r, 1, "SELECTED: %s", servo_name(selected));
+    mvprintw(r, 1, "SELECTED: %s", SERVO_NAMES[selected]);
     attroff(A_BOLD);
     r++;
 
@@ -1664,10 +1622,6 @@ static void print_usage(const char *prog)
         "Options:\n"
         "  --min A,B,C,D,E,F   override per-servo MIN pulse widths (us)\n"
         "  --max A,B,C,D,E,F   override per-servo MAX pulse widths (us)\n"
-        "  --names A,B,C,D,E,F per-servo display names. launch.sh injects\n"
-        "                      these from gestures.json's servo_channels so\n"
-        "                      the TUI always shows the user's current names\n"
-        "                      (e.g. Base,Elbow,Forearm,Wrist1,Wrist2,Gripper)\n"
         "  --smooth            use the slew-rate limiter (same as cpcu_io)\n"
         "  --config <path>     runtime.json to load + save into\n"
         "                      (default: /opt/cpcu/config.json then config/runtime.json)\n"
@@ -1696,13 +1650,7 @@ int main(int argc, char *argv[])
     uint16_t override_min[PCA_SERVO_COUNT] = {0};
     uint16_t override_max[PCA_SERVO_COUNT] = {0};
     bool     have_min = false, have_max = false;
-    const char *cli_config_path = NULL;
-    const char *cli_names_csv   = NULL;     /* --names "A,B,C,D,E,F" */
-
-    /* Seed display names with compile-time defaults so that an early
-     * print_usage / fprintf can use servo_name() safely even if the
-     * caller never passes --names. */
-    servo_names_use_defaults();
+    const char *cli_config_path = NULL;             /* */
 
     for(int i = 1; i < argc; i++)
     {
@@ -1733,10 +1681,6 @@ int main(int argc, char *argv[])
             }
             have_max = true;
         }
-        else if(strcmp(argv[i], "--names") == 0 && i + 1 < argc)
-        {
-            cli_names_csv = argv[++i];
-        }
         else if(strcmp(argv[i], "--smooth") == 0)
         {
             smooth_enabled = true;
@@ -1753,18 +1697,14 @@ int main(int argc, char *argv[])
         }
     }
 
-    /* Apply --names AFTER full parse so --help still works without
-     * touching the storage, and so a later positional arg can't be
-     * accidentally consumed as a name token. */
-    if(cli_names_csv)
-    {
-        int n = servo_names_apply_csv(cli_names_csv);
-        fprintf(stderr, "[TESTBENCH] %d servo name(s) loaded from --names\n", n);
-    }
-
     setlocale(LC_ALL, "");
     signal(SIGINT,  on_sig);
     signal(SIGTERM, on_sig);
+
+    /* Pull servo names from /tmp/cpcu_servo_names.txt (written by
+     * launch.sh preflight from gestures.json) so the UI columns show
+     * Base/Elbow/Forearm/… instead of the compile-time placeholders. */
+    load_servo_names_from_tmp();
 
     /* Try to init PCA9685 hardware */
     PCA_Status st = PCA_Init(&pca, i2c_dev, i2c_addr);
@@ -1845,6 +1785,22 @@ int main(int argc, char *argv[])
                         gravity_scale[i] = (float)cfg.gravity_scale_pct[i] / 100.0f;
                     }
                 }
+                /* Override the compile-time logical→physical channel
+                 * map with the runtime-tunable values from runtime.json.
+                 * Without this the testbench would drive the wrong PCA
+                 * outputs whenever the operator wired servos to
+                 * non-default channels (e.g. {0,2,4,7,11,15}). Matches
+                 * what cpcu_io.c does after IPC_ReadRuntimeConfig. */
+                for(int i = 0; i < PCA_SERVO_COUNT; i++)
+                {
+                    pca.servo_channel[i] = cfg.servo_pca_ch[i];
+                }
+                fprintf(stderr,
+                    "[TESTBENCH] PCA channel map from runtime.json: "
+                    "S0=%u S1=%u S2=%u S3=%u S4=%u S5=%u\n",
+                    pca.servo_channel[0], pca.servo_channel[1],
+                    pca.servo_channel[2], pca.servo_channel[3],
+                    pca.servo_channel[4], pca.servo_channel[5]);
                 strncpy(cfg_path_used, paths[p], sizeof(cfg_path_used) - 1);
                 cfg_loaded = true;
                 /* Snapshot the on-disk values for the detail panel. */
@@ -2411,6 +2367,11 @@ int main(int argc, char *argv[])
                             pca.servo_min[i] = cfg.servo_min_us[i];
                             pca.servo_max[i] = cfg.servo_max_us[i];
                             servo_bias[i]    = cfg.servo_bias_us[i];
+                            /* Re-apply the logical→physical channel
+                             * map so live re-wires (set-pca-channel +
+                             * R reload in the testbench) take effect
+                             * without an exit/restart. */
+                            pca.servo_channel[i] = cfg.servo_pca_ch[i];
                             /* smoother values too. Apply them
                              * back to the live smoother so the next
                              * jog feels different (or the same — the
