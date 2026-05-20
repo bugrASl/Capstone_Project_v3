@@ -15,7 +15,17 @@ RT_JSON="${REPO}/config/runtime.json"
 GS_JSON="${REPO}/config/gestures.json"
 
 STEP=20
-START=1500     # midway pulse — close enough to "open" for any gripper
+# Starting pulse — use --start <us> or set GRIP_START_US env. Defaults
+# to the servo's neutral_us from gestures.json (resolved below) when
+# unset. Clamped to [min_us, max_us] before any I²C write so a typo
+# can't drive the servo past its mechanical stop.
+START="${GRIP_START_US:-}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --start) START="$2"; shift 2 ;;
+        *)       shift ;;
+    esac
+done
 
 G='\033[32m'; Y='\033[33m'; R='\033[31m'; C='\033[36m'; N='\033[0m'
 ok()   { echo -e "  ${G}✓${N} $*"; }
@@ -66,6 +76,19 @@ except Exception:
     print(1500)
 PYEOF
 )
+
+# Default START to GRIP_NEUTRAL if the operator didn't override it.
+# Then clamp to the safe range so --start 2500 on a 1733-max servo
+# can't strip the gears.
+[ -z "${START}" ] && START="${GRIP_NEUTRAL}"
+if [ "${START}" -lt "${GRIP_MIN}" ]; then
+    warn "start ${START} below min ${GRIP_MIN} — clamping"
+    START=${GRIP_MIN}
+elif [ "${START}" -gt "${GRIP_MAX}" ]; then
+    warn "start ${START} above max ${GRIP_MAX} — clamping (raise max_us "
+    warn "in gestures.json::servo_channels.Gripper if you want a wider range)"
+    START=${GRIP_MAX}
+fi
 
 ## ─────────────────────────────────────────────────────────────────────
 ## Single PCA9685 initialiser + servo writer. Used by both the "park
