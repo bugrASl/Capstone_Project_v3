@@ -320,8 +320,35 @@ fig = plt.figure(figsize=(16, 9), facecolor="#fafafa")
 fig.suptitle("CPCU UART Monitor — dual-arm classifier  (R: ch1-3   L: ch4-6)",
              fontsize=15, fontweight="bold", color="#222222")
 
-# ── EMG waveform grid: 3 rows × 3 cols, left two columns for ch1-6 ──
-sig_axes    = [fig.add_subplot(3, 3, slot) for slot in (1, 4, 7, 2, 5, 8)]
+# ── Unified layout via GridSpec ──────────────────────────────────────
+# The old layout mixed `fig.add_subplot(3, 3, ...)` (for EMG) with
+# `fig.add_subplot(2, 3, ...)` (for the status panels). Mixing row
+# counts that aren't multiples (3 vs 2) makes tight_layout silently
+# no-op with the warning:
+#   "tight_layout not applied: number of rows in subplot specifications
+#    must be multiples of one another."
+# When that happens matplotlib falls back to rcParams defaults, and on
+# some window sizes / DPI scales the EMG subplots get squeezed off the
+# visible area.
+#
+# Fix: a single 6-row × 3-col grid. EMG plots span 2 rows each (so
+# they're the same visible size as before), status panels span 3 rows
+# each. Same grid → tight_layout works → layout is deterministic.
+from matplotlib.gridspec import GridSpec
+gs = GridSpec(6, 3, figure=fig,
+              left=0.06, right=0.97, top=0.92, bottom=0.06,
+              wspace=0.25, hspace=0.55)
+
+# EMG waveform grid: left two columns × 3 stacked plots (each 2 rows
+# of the 6-row grid). Order matches LABELS below.
+sig_axes = [
+    fig.add_subplot(gs[0:2, 0]),   # R_Hand
+    fig.add_subplot(gs[2:4, 0]),   # R_Biceps
+    fig.add_subplot(gs[4:6, 0]),   # R_Triceps
+    fig.add_subplot(gs[0:2, 1]),   # L_Hand
+    fig.add_subplot(gs[2:4, 1]),   # L_Biceps
+    fig.add_subplot(gs[4:6, 1]),   # L_Triceps
+]
 PLOT_COLORS = ["#2266cc", "#cc3333", "#2a8a2a",
                "#e08a1f", "#7a3fb8", "#8a5a2a"]
 LABELS      = ["R_Hand (ch1)",   "R_Biceps (ch2)", "R_Triceps (ch3)",
@@ -332,21 +359,28 @@ lines = []
 for i, ax in enumerate(sig_axes):
     # Centre baseline at 2048 (12-bit ADC midpoint) — gives the eye a
     # reference for "rest" vs "active" without staring at the y-tick.
-    ax.axhline(2048, color="#cccccc", linewidth=0.8, linestyle="--", zorder=0)
+    # zorder=0 keeps it BEHIND the data line.
+    ax.axhline(2048, color="#cccccc", linewidth=0.8,
+               linestyle="--", zorder=0)
+    # animated=True is REQUIRED for FuncAnimation(blit=True): the line
+    # is excluded from the cached static background and re-blitted on
+    # every frame from update()'s return value. Without it, the line
+    # ends up in the static cache and set_ydata changes never repaint.
     line, = ax.plot(x_axis, initial_y, color=PLOT_COLORS[i],
-                    animated=True, linewidth=0.9)
+                    animated=True, linewidth=1.1, zorder=2)
     ax.set_ylim(0, 4500)
     ax.set_xlim(0, PLOT_POINTS - 1)
-    ax.set_title(LABELS[i], fontsize=9, fontweight="bold",
-                 color=PLOT_COLORS[i], loc="left", pad=2)
+    ax.set_title(LABELS[i], fontsize=10, fontweight="bold",
+                 color=PLOT_COLORS[i], loc="left", pad=3)
     ax.tick_params(axis="both", labelsize=7, colors="#666666")
     ax.grid(True, alpha=0.25)
     for spine in ax.spines.values():
         spine.set_color("#cccccc")
     lines.append(line)
 
-ax_R = fig.add_subplot(2, 3, 3)
-ax_L = fig.add_subplot(2, 3, 6)
+# Status panels: right column, two stacked panels each 3 rows tall.
+ax_R = fig.add_subplot(gs[0:3, 2])
+ax_L = fig.add_subplot(gs[3:6, 2])
 for ax in (ax_R, ax_L):
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis("off")
 
@@ -573,7 +607,9 @@ anim = animation.FuncAnimation(fig, update,
                                cache_frame_data=False)
 
 try:
-    plt.tight_layout()
+    # GridSpec already sets explicit margins; we don't need (and don't
+    # want) tight_layout, which used to silently no-op with a warning
+    # because the old layout mixed 3-row and 2-row subplot grids.
     plt.show()
 finally:
     stop_event.set()
