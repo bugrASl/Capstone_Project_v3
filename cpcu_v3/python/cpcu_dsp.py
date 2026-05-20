@@ -1150,6 +1150,11 @@ def run_inference(verbose=False, operator="default"):
     # ── IPC ──
     ipc = IPCBridge()
     ipc.set_dsp_ready()
+    # Drop an initial group-state digest BEFORE any windows fill, so the
+    # TUI's DSP/AI page can show the list of groups (each in 'rest' at
+    # 0%) the moment DSP is ready, instead of "(no inference yet)". The
+    # real inference loop overwrites this on the first window.
+    write_group_state_digest(group_states)
     print(f"[DSP] ready. groups={len(group_states)} "
           f"operator={operator}", flush=True)
     _uart_init()
