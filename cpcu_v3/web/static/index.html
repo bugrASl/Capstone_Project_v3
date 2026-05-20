@@ -223,14 +223,40 @@ const handBody=bx(28,38,22,M.hand);handBody.position.y=24;j4.add(handBody);
 // J[5] — gripper. We use a Group only so the index exists; aperture
 // is driven by direct finger position update in updateArm().
 const j5=new THREE.Group();j5.position.y=45;j4.add(j5);J.push(j5);
-// Knuckle at the wrist→hand interface
-const handCap=cy(15,12,6,M.wrist);handCap.position.y=-2;j5.add(handCap);
-// Two fingers extend along +Y; their Z offset is the aperture.
-const fR=bx(7,42,12,M.finger);fR.position.set(0,21,9);j5.add(fR);
-const fL=bx(7,42,12,M.finger);fL.position.set(0,21,-9);j5.add(fL);
-// Fingertip nubs to make grasping visible
-const ftR=bx(7,6,14,M.finger);ftR.position.set(0,42,9);j5.add(ftR);
-const ftL=bx(7,6,14,M.finger);ftL.position.set(0,42,-9);j5.add(ftL);
+
+/* Real gripper (xArm-style scissor jaw): a flat mounting plate on the
+ * wrist with two curved finger arms that pivot from the front of the
+ * plate. Open => arms angle OUTWARD in a Y; closed => arms point
+ * forward in parallel. We model this as two finger Groups whose
+ * rotation.z is driven by the gripper PWM. */
+
+// Mounting plate (rectangular, lies flat above the wrist)
+const handPlate=bx(34,6,28,M.hand);handPlate.position.y=4;j5.add(handPlate);
+// Central gear hub visible between the fingers
+const gripHub=cy(8,8,8,M.wrist);gripHub.position.y=10;j5.add(gripHub);
+
+/* Finger arms. Each is a Group pivoting near the front of the plate.
+ * The arm itself extends along +Y of the group (i.e. "forward" in the
+ * group's local frame). With group.rotation.z = 0 the arms point
+ * forward; positive/negative z-rotation swings them apart. */
+function buildFinger(side){            // side = +1 right, -1 left
+  const g=new THREE.Group();
+  g.position.set(0,8,side*9);          // pivot at the front-edge of the plate
+  // Curved arm: two box segments at an angle
+  const armProx=bx(8,28,6,M.finger);   // proximal segment (vertical from pivot)
+  armProx.position.y=14;g.add(armProx);
+  // Tip segment (angled inward like the photo)
+  const tip=new THREE.Group();
+  tip.position.y=28;
+  tip.rotation.z=side*-0.35;           // bend inward
+  const tipBox=bx(8,22,7,M.finger);tipBox.position.y=11;tip.add(tipBox);
+  // Pad at the tip (rubber-style grip surface)
+  const pad=bx(9,5,9,M.wrist);pad.position.y=22;tip.add(pad);
+  g.add(tip);
+  return g;
+}
+const fR=buildFinger(+1);j5.add(fR);
+const fL=buildFinger(-1);j5.add(fL);
 
 /* ──────────────────────────────────────────────────────────────────────
  * Orbit camera — spherical coordinates around the arm's mid-height.
@@ -274,14 +300,14 @@ function updateArm(){
   J[2].rotation.z = -p2a(SV[2],su[2]);
   J[3].rotation.y =  p2a(SV[3],su[3]);
   J[4].rotation.z = -p2a(SV[4],su[4]);
-  // Gripper aperture: -1 = fully open, +1 = closed. Mapped to finger
-  // separation: open => 14 apart, closed => 2 apart.
-  const ap = (su[5]-SV[5].mn)/(SV[5].mx-SV[5].mn); // 0..1
-  const sep = 2 + ap*12;
-  fR.position.z =  sep;
-  fL.position.z = -sep;
-  ftR.position.z =  sep;
-  ftL.position.z = -sep;
+  // Gripper aperture: ap=0 fully open (fingers swung outward),
+  // ap=1 fully closed (fingers parallel, pads near touching).
+  // Scissor pivot: positive z-rotation swings the +Z finger outward.
+  const ap = (su[5]-SV[5].mn)/(SV[5].mx-SV[5].mn);
+  const maxSwing = 0.55;                  // radians outward at full open
+  const swing = (1-ap) * maxSwing;
+  fR.rotation.z = -swing;                 // right finger swings -Z
+  fL.rotation.z =  swing;                 // left finger swings +Z
 }
 
 function ui(){
