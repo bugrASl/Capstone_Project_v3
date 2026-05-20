@@ -10,31 +10,31 @@
             "neutral_us": 1500
         },
         "Elbow": {
-            "pca_ch": 1,
-            "min_us": 1074,
-            "max_us": 1953,
-            "neutral_us": 1500
-        },
-        "Forearm": {
             "pca_ch": 2,
             "min_us": 1074,
             "max_us": 1953,
             "neutral_us": 1500
         },
+        "Forearm": {
+            "pca_ch": 4,
+            "min_us": 1074,
+            "max_us": 1953,
+            "neutral_us": 1500
+        },
         "Wrist1": {
-            "pca_ch": 3,
+            "pca_ch": 7,
             "min_us": 1001,
             "max_us": 2002,
             "neutral_us": 1500
         },
         "Wrist2": {
-            "pca_ch": 4,
+            "pca_ch": 11,
             "min_us": 1001,
             "max_us": 2002,
             "neutral_us": 1500
         },
         "Gripper": {
-            "pca_ch": 5,
+            "pca_ch": 15,
             "min_us": 976,
             "max_us": 1733,
             "neutral_us": 1500
@@ -54,7 +54,7 @@
                     "Triceps_R"
                 ]
             },
-            "model_path": "models/right_arm.pkl",
+            "model_path": "models/arm.pkl",
             "confidence": {
                 "curve": "quadratic",
                 "floor_pct": 40,
@@ -129,7 +129,7 @@
                     "Triceps_L"
                 ]
             },
-            "model_path": "models/left_arm.pkl",
+            "model_path": "models/arm.pkl",
             "confidence": {
                 "curve": "quadratic",
                 "floor_pct": 40,
