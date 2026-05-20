@@ -406,7 +406,18 @@ with open("/tmp/cpcu_smoother_config.txt", "w") as f:
 PYEOF
 }
 
-preflight_pca()    { resolve_bin pca_testbench;    }
+preflight_pca()    {
+    # Keep runtime.json's servo_pca_ch in lockstep with gestures.json
+    # before launching the testbench — same reason the TUI preflight
+    # does it: without the sync, pca_testbench falls back to the
+    # compile-time PCA_SERVO_CHANNEL map ({0,1,11,8,5,4}), which only
+    # accidentally agrees with the operator's wiring on slot 0 (Base).
+    # That's why everything you press only moves Base.
+    sync_servo_pca_ch_to_runtime
+    publish_servo_names
+    publish_smoother_config
+    resolve_bin pca_testbench
+}
 preflight_nrf()    { resolve_bin nrf_testbench;    }
 preflight_tui()    { resolve_bin cpcu_tui;          }
 preflight_signal() { resolve_bin signal_testbench;  }
