@@ -49,7 +49,6 @@ void CFG_Defaults(IPC_RuntimeConfig *out)
         out->smooth_deadband_us[i]        = 10;         /* SMOOTH_DEFAULT_DEADBAND */
         out->gravity_dir[i]              = 0;
         out->gravity_scale_pct[i]        = 100;
-        out->servo_pca_ch[i]             = (uint8_t)i;  /* identity map 0..5 */
     }
 
     /* Gesture velocities: zero everywhere by default (i.e. rest = freeze).
@@ -253,27 +252,6 @@ static bool read_u16_array(JC *j, const char *key, uint16_t *dst, int n,
     return true;
 }
 
-static bool read_u8_array(JC *j, const char *key, uint8_t *dst, int n,
-                          uint8_t lo, uint8_t hi)
-{
-    JC saved = *j; j->pos = 0;
-    if(!jc_find_key(j, key)) { *j = saved; return false; }
-    long tmp[16];
-    if(n > 16) return false;
-    if(!jc_read_int_array(j, tmp, n)) return false;
-    for(int i = 0; i < n; i++)
-    {
-        if(tmp[i] < (long)lo || tmp[i] > (long)hi)
-        {
-            jc_set_err(j, "%s[%d] = %ld out of range [%u..%u]",
-                       key, i, tmp[i], lo, hi);
-            return false;
-        }
-        dst[i] = (uint8_t)tmp[i];
-    }
-    return true;
-}
-
 static bool read_i16_array(JC *j, const char *key, int16_t *dst, int n,
                            int16_t lo, int16_t hi)
 {
@@ -397,41 +375,15 @@ CFG_Status CFG_LoadFromFile(const char *path, IPC_RuntimeConfig *out,
     /* Optional fields — keep defaults if absent. */
     (void)read_i16_array(j, "servo_bias_us", out->servo_bias_us,
                          IPC_CFG_NUM_SERVOS, -100, 100);
-    (void)read_u16_array(j, "smooth_velocity_us_per_s",
+    (void)read_u16_array(j, "smooth_velocity",
                          out->smooth_velocity_us_per_s, IPC_CFG_NUM_SERVOS,
                          100, 10000);
-    (void)read_u16_array(j, "smooth_accel_us_per_s2",
+    (void)read_u16_array(j, "smooth_accel",
                          out->smooth_accel_us_per_s2, IPC_CFG_NUM_SERVOS,
                          500, 50000);
-    (void)read_u16_array(j, "smooth_deadband_us",
+    (void)read_u16_array(j, "smooth_deadband",
                          out->smooth_deadband_us, IPC_CFG_NUM_SERVOS,
                          0, 50);
-
-    /* Logical→physical PCA map. Each entry must be in 0..15 (PCA9685
-     * has 16 channels) and all 6 must be DISTINCT — sharing one PCA
-     * channel between two logical servos would double-drive the same
-     * output. If the key is absent we keep the default identity map
-     * (set by CFG_Defaults). If validation fails we bail with an
-     * informative error rather than letting a bad map reach the I²C
-     * driver. */
-    if(read_u8_array(j, "servo_pca_ch", out->servo_pca_ch,
-                     IPC_CFG_NUM_SERVOS, 0, 15))
-    {
-        for(int i = 0; i < IPC_CFG_NUM_SERVOS; i++)
-        {
-            for(int k = i + 1; k < IPC_CFG_NUM_SERVOS; k++)
-            {
-                if(out->servo_pca_ch[i] == out->servo_pca_ch[k])
-                {
-                    if(err_msg) snprintf(err_msg, err_msg_sz,
-                        "servo_pca_ch: slots %d and %d both map to PCA channel %u",
-                        i, k, out->servo_pca_ch[i]);
-                    free(buf);
-                    return CFG_ERR_RANGE;
-                }
-            }
-        }
-    }
 
     /* gravity compensation */
     (void)read_i16_array(j, "gravity_dir",

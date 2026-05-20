@@ -2309,9 +2309,9 @@ int main(int argc, char *argv[])
                         { "servo_min_us",             mins_i16,    PCA_SERVO_COUNT },
                         { "servo_max_us",             maxs_i16,    PCA_SERVO_COUNT },
                         { "servo_bias_us",            servo_bias,  PCA_SERVO_COUNT },
-                        { "smooth_velocity_us_per_s", vel_i16,     PCA_SERVO_COUNT },
-                        { "smooth_accel_us_per_s2",   acc_i16,     PCA_SERVO_COUNT },
-                        { "smooth_deadband_us",       dead_i16,    PCA_SERVO_COUNT },
+                        { "smooth_velocity", vel_i16,     PCA_SERVO_COUNT },
+                        { "smooth_accel",   acc_i16,     PCA_SERVO_COUNT },
+                        { "smooth_deadband",       dead_i16,    PCA_SERVO_COUNT },
                         { "gravity_dir",              gdir_i16,    PCA_SERVO_COUNT },
                         { "gravity_scale_pct",        gscl_i16,    PCA_SERVO_COUNT },
                     };
