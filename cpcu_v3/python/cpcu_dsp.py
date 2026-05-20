@@ -238,6 +238,26 @@ def load_gestures(path=GESTURES_PATH):
     for g in groups:
         print(f"[DSP]   {g['name']}: {list(g['gestures'].keys())} "
               f"emg={g['emg_channels']} model={g['model_path']}", flush=True)
+
+    # Cross-check trace: for every group/gesture, print which servo
+    # slots the rates[] resolves to. This catches name typos in
+    # gestures.json (e.g. "Elbo" → silently dropped) and confirms the
+    # slot ordering matches expectations after a pca_ch re-wire.
+    slot_to_name = {slot: name for name, slot in name_to_idx.items()}
+    print("[DSP] gesture → servo trace:", flush=True)
+    for g in groups:
+        print(f"[DSP]   [{g['name']}]", flush=True)
+        for gname, gdef in g['gestures'].items():
+            rates = gdef.get('_rates', [0] * NUM_SERVOS)
+            non_zero = [(slot, rates[slot]) for slot in range(NUM_SERVOS) if rates[slot] != 0]
+            if non_zero:
+                desc = ", ".join(f"{slot_to_name.get(s, '?')}(slot {s}) {'+' if r > 0 else ''}{r}"
+                                 for s, r in non_zero)
+                print(f"[DSP]     {gname:<10} → {desc}", flush=True)
+            else:
+                mode = gdef.get('mode', '?')
+                print(f"[DSP]     {gname:<10} → ({mode})", flush=True)
+
     print(f"[DSP] servo limits: min={SERVO_MIN_US} max={SERVO_MAX_US}",
           flush=True)
     return groups, servo_ch

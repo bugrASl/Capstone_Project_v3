@@ -258,6 +258,12 @@ typedef struct __attribute__((aligned(64)))
     uint16_t            grip_firm_us;                       /* default 1100 */
     uint16_t            grip_stall_recover_ms;              /* default 2000 */
 
+    /* When true, the safety FSM skips the battery-critical check
+     * entirely. Useful for bench testing without a battery wired up
+     * (vbat_raw=0 would otherwise force SAFE state). Default 0. */
+    uint8_t             safety_ignore_battery;
+    uint8_t             _pad_safety[3];
+
     /* Pad to a fixed size so future future additions don't change the
      * IPC layout binary-incompatibly. Reserve generously. */
     uint8_t             _reserved[256];

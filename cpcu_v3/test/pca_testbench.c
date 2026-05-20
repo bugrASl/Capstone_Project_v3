@@ -871,12 +871,36 @@ static void gsim_tick(void)
     }
     /* rest: don't touch targets — arm holds where it is */
 
-    snprintf(status_line, sizeof(status_line),
-             "GESTURE: [%c] %s  S0=%u S1=%u S2=%u S5=%u",
-             GESTURES[gsim_gesture].key,
-             GESTURES[gsim_gesture].name,
-             servo_us[0], servo_us[1], servo_us[2], servo_us[5]);
-    status_until = time(NULL) + 2;
+    /* Status line shows the gesture name, which slots it drives, and
+     * the physical PCA channel each slot resolves to — so the operator
+     * can verify the gesture→servo→PCA chain at a glance. Names come
+     * from /tmp/cpcu_servo_names.txt (published by launch.sh preflight
+     * from gestures.json). */
+    {
+        const int16_t *rates = (gsim_gesture > 0 && gsim_gesture < GESTURE_COUNT)
+                               ? GESTURES[gsim_gesture].rates : NULL;
+        char active_servos[256] = {0};
+        size_t off = 0;
+        if(rates)
+        {
+            for(int s = 0; s < PCA_SERVO_COUNT && off < sizeof(active_servos) - 32; s++)
+            {
+                if(rates[s] == 0) continue;
+                const char *nm = SERVO_NAMES[s] ? SERVO_NAMES[s] : "?";
+                off += snprintf(active_servos + off,
+                                sizeof(active_servos) - off,
+                                "%s%s(slot=%d→PCA%u, %d us)",
+                                off ? ", " : "",
+                                nm, s, pca.servo_channel[s], rates[s]);
+            }
+        }
+        if(off == 0) snprintf(active_servos, sizeof(active_servos), "(no servos)");
+        snprintf(status_line, sizeof(status_line),
+                 "[%c] %s → %s",
+                 GESTURES[gsim_gesture].key,
+                 GESTURES[gsim_gesture].name,
+                 active_servos);
+    }
     status_until = time(NULL) + 2;
 }
 

@@ -210,6 +210,11 @@ typedef struct
     uint64_t        boot_us;
     bool            first_packet_seen;
     bool            boot_grace_flushed;     /* link stats flushed after grace */
+    /* When true the safety FSM treats battery telemetry as advisory
+     * and never enters BATT_CRITICAL. Driven from
+     * IPC_RuntimeConfig.safety_ignore_battery via SAFETY_SetIgnoreBattery
+     * at boot — useful for bench tests with no battery wired. */
+    bool            ignore_battery;
 
     LINK_Stats      link;
     BATTERY_State   battery;
@@ -225,6 +230,11 @@ typedef struct
 /*============= API ========================================================*/
 
 void        SAFETY_Init(SAFETY_Context *ctx);
+
+/* Toggle the bench-test bypass for battery-critical detection. Pass
+ * true to ignore vbat_raw and the WL_BATT_CRIT flag entirely. Safe to
+ * call at runtime; clearing it does NOT retroactively re-evaluate. */
+void        SAFETY_SetIgnoreBattery(SAFETY_Context *ctx, bool ignore);
 
 uint32_t    SAFETY_SeqGap(SAFETY_Context *ctx, uint8_t seq);
 void        SAFETY_FeedPacket(SAFETY_Context *ctx, const WL_Packet *pkt, uint64_t now_us);
