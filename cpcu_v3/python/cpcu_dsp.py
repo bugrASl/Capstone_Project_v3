@@ -52,6 +52,44 @@ INSTALLED_MODEL = "/opt/cpcu/models"
 INSTALLED_CFG   = "/opt/cpcu/config.json"
 THRESHOLDS_PATH = os.path.join(MODEL_DIR, "noise_thresholds.json")
 
+# Per-muscle envelope-floor thresholds produced by the AI team's
+# proccess.py at training time. Same muscle order on BOTH arms
+# (right=ch0-2, left=ch3-5 → s1=Hand, s2=Biceps, s3=Triceps), so a
+# single 3-element threshold vector serves both groups.
+#
+# If a window's MEAN envelope on every channel of a group is BELOW
+# its corresponding threshold, the muscle is not contracting and we
+# short-circuit the classifier to "rest" — no ML call, no jitter.
+# This is exactly what the training pipeline does to label rest data;
+# applying it at runtime keeps train/test conditions aligned.
+DYNAMIC_THR_PATH = os.path.join(MODEL_DIR, "dynamic_noise_thresholds.json")
+_dyn_thresh = None      # populated lazily by _load_dynamic_thresholds()
+
+
+def _load_dynamic_thresholds():
+    """Read s1/s2/s3 → [thr_hand, thr_biceps, thr_triceps]. Returns None
+    if the file is missing or malformed (DSP then falls through to the
+    normal classify-everything path, same as before)."""
+    global _dyn_thresh
+    if _dyn_thresh is not None:
+        return _dyn_thresh
+    try:
+        with open(DYNAMIC_THR_PATH) as f:
+            d = json.load(f)
+        _dyn_thresh = [
+            float(d.get("s1", 0.0)),
+            float(d.get("s2", 0.0)),
+            float(d.get("s3", 0.0)),
+        ]
+        print(f"[DSP] loaded noise-floor gates "
+              f"hand={_dyn_thresh[0]:.1f} biceps={_dyn_thresh[1]:.1f} "
+              f"triceps={_dyn_thresh[2]:.1f}", flush=True)
+    except Exception as e:
+        print(f"[DSP] no dynamic_noise_thresholds.json "
+              f"(falls through to plain classifier): {e}", flush=True)
+        _dyn_thresh = []   # mark "tried, none available"
+    return _dyn_thresh
+
 # Sampling rates / window sizing
 INPUT_FS_HZ     = 1000                              # BSAU 1 kHz packet rate
 TARGET_FS_HZ    = 200                               # after decimation
@@ -705,24 +743,41 @@ def _uart_init():
         print(f"[DSP] UART: {e}", flush=True)
 
 
+_uart_last_good = [2048] * 6   # persistent baseline used by UART filter
+
+
 def _uart_stream_samples(samples_batch):
     """Stream raw ADC samples line-by-line in predictX-compatible CSV.
 
     ``samples_batch`` is the 3-D BSAU array shape (n_entries, 2, 8) that
     cpcu_io drained from the ring. We flatten across (entries × pairs)
     to write one CSV line per actual 2 kHz sample. Only channels 0..5
-    are emitted (matches the 6-channel BSAU front-end)."""
+    are emitted (matches the 6-channel BSAU front-end).
+
+    Applies the SAME spike filter as `ingest_sample()` so the host
+    monitor.py doesn't see all-zero packets from wireless reacquisition
+    glitches. Without this filter the host display showed sudden
+    drops to 0 even though Pi-side inference was already substituting
+    the same values away."""
     if _uart is None or samples_batch is None:
         return
     try:
-        # samples_batch[ei, si, ch] -> int. Write all (ei, si) rows
-        # but only the 6 wired channels.
         n_e, n_s, _n_ch = samples_batch.shape
         buf = []
         for ei in range(n_e):
             for si in range(n_s):
                 row = samples_batch[ei, si]
-                buf.append(f"{row[0]},{row[1]},{row[2]},{row[3]},{row[4]},{row[5]}")
+                filtered = [0] * 6
+                for ch in range(6):
+                    raw = int(row[ch])
+                    lv  = _uart_last_good[ch]
+                    if raw < ADC_MIN_VALID or raw > ADC_MAX_VALID \
+                       or abs(raw - lv) > ADC_MAX_DELTA:
+                        raw = lv
+                    _uart_last_good[ch] = raw
+                    filtered[ch] = raw
+                buf.append(f"{filtered[0]},{filtered[1]},{filtered[2]},"
+                           f"{filtered[3]},{filtered[4]},{filtered[5]}")
         if buf:
             _uart.write(("\n".join(buf) + "\n").encode())
     except Exception:
@@ -976,10 +1031,12 @@ def _features_and_inference(gst, rms_8ch, ipc):
 
     Sets ``gst.conf_pct`` / ``gst.class_conf`` / ``gst.last_active``."""
     features_flat = []
+    env_means     = []        # one per channel — used by the noise-floor gate
     for bi, ch in enumerate(gst.emg_channels):
         w  = np.array(list(gst.buffers[bi])[-WINDOW_HI:], dtype=np.float64)
         _cl, ev, feats = process_window(w)
         features_flat.extend(feats)
+        env_means.append(float(np.mean(np.abs(ev))))
         rms_8ch[ch] = feats[0]
         try:
             ipc.write_dsp_filtered_window(ch, ev,
@@ -993,6 +1050,33 @@ def _features_and_inference(gst, rms_8ch, ipc):
 
     if not gst.inference_on:
         return
+
+    # Noise-floor gate: when EVERY channel's mean envelope is below the
+    # AI team's training-time threshold, we KNOW the muscle isn't
+    # contracting — running the classifier here would just produce a
+    # noisy guess and pollute the hysteresis history. Short-circuit
+    # straight to "rest". Disabled if thresholds aren't loaded yet
+    # (dynamic_noise_thresholds.json missing), in which case behaviour
+    # is unchanged from before.
+    thr = _load_dynamic_thresholds()
+    if thr and len(env_means) == len(thr):
+        if all(em < t for em, t in zip(env_means, thr)):
+            # Force rest. Synthesise a "100% rest" probability vector
+            # for the TUI / UART overlay so the operator sees what's
+            # happening, but skip the actual model call.
+            classes = (list(gst.model.classes_)
+                       if gst.model is not None else ["rest"])
+            try:
+                rest_idx = classes.index("rest")
+            except ValueError:
+                rest_idx = 0
+            probs = [0.0] * len(classes)
+            probs[rest_idx] = 1.0
+            _update_hysteresis(gst, "rest", 1.0)
+            gst.last_active = rest_idx
+            gst.class_conf  = probs
+            gst.conf_pct    = 100
+            return
 
     X     = np.asarray(features_flat, dtype=np.float64).reshape(1, -1)
     Xs    = gst.scaler.transform(X)
