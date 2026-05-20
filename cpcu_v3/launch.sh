@@ -1044,7 +1044,9 @@ run_tui_tmux() {
     local features="KERNEL + SHELL + TUI"
     [ "${WITH_WS:-0}" = "1" ] && features="${features} + WS"
     [ "${WITH_AUDIO:-0}" = "1" ] && features="${features} + AUDIO"
-    [ "${WITH_UART:-0}" = "1" ] && features="${features} + UART"
+    if [ "${WITH_UART:-0}" = "1" ]; then
+        features="${features} + UART(${CPCU_UART_DEBUG})"
+    fi
     [ "${OPERATOR}" != "default" ] && features="${features} (operator: ${OPERATOR})"
     if [ "${WITH_WS:-0}" = "1" ]; then
         with_ws_preflight || fatal "WS preflight failed"
@@ -3293,13 +3295,15 @@ cmd_reload() {
 WITH_WS=0
 WITH_AUDIO=0
 WITH_UART=0
+UART_EXPLICIT=0     # set by --uart or --no-uart; suppresses auto-detect
 OPERATOR="default"
 NEW_ARGS=()
 for arg in "$@"; do
     case "${arg}" in
         --with-ws|--ws) WITH_WS=1 ;;
         --audio)        WITH_AUDIO=1 ;;
-        --uart)         WITH_UART=1 ;;
+        --uart)         WITH_UART=1; UART_EXPLICIT=1 ;;
+        --no-uart)      WITH_UART=0; UART_EXPLICIT=1 ;;
         --operator)     _NEXT_IS_OPERATOR=1 ;;
         *)
             if [ "${_NEXT_IS_OPERATOR:-0}" = "1" ]; then
@@ -3313,7 +3317,35 @@ for arg in "$@"; do
 done
 set -- "${NEW_ARGS[@]+"${NEW_ARGS[@]}"}"
 export CPCU_OPERATOR="${OPERATOR}"
-[ "${WITH_UART}" = "1" ] && export CPCU_UART_DEBUG="/dev/ttyAMA0"
+
+# Auto-detect a UART device and enable the debug stream by default.
+# Operator can suppress with --no-uart, or override the device path
+# by exporting CPCU_UART_DEBUG before launching. Probes the usual Pi
+# locations in order — first writable hit wins.
+if [ "${UART_EXPLICIT}" = "0" ] && [ -z "${CPCU_UART_DEBUG:-}" ]; then
+    for _uart_dev in /dev/ttyAMA0 /dev/serial0 /dev/ttyS0 /dev/ttyUSB0; do
+        if [ -w "${_uart_dev}" ]; then
+            WITH_UART=1
+            CPCU_UART_DEBUG="${_uart_dev}"
+            break
+        fi
+    done
+fi
+
+if [ "${WITH_UART}" = "1" ]; then
+    # Use explicit path if set, otherwise fall back to the Pi's UART0.
+    export CPCU_UART_DEBUG="${CPCU_UART_DEBUG:-/dev/ttyAMA0}"
+    if [ ! -e "${CPCU_UART_DEBUG}" ]; then
+        warn "UART device ${CPCU_UART_DEBUG} missing — debug stream disabled"
+        unset CPCU_UART_DEBUG
+        WITH_UART=0
+    elif [ ! -w "${CPCU_UART_DEBUG}" ]; then
+        warn "UART device ${CPCU_UART_DEBUG} not writable by $(whoami) — "
+        warn "  add user to 'dialout' group: sudo usermod -aG dialout \$USER"
+        unset CPCU_UART_DEBUG
+        WITH_UART=0
+    fi
+fi
 
 case "${MODE}" in
     -h|--help|help)         cmd_help "$@" ;;
