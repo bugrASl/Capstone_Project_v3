@@ -1,23 +1,44 @@
 #!/usr/bin/env python3
-"""monitor.py — CPCU live UART dashboard.
+"""monitor.py — CPCU host-side UART dashboard.
 
-Six EMG waveforms (left column, ch1-3 stacked then ch4-6 stacked) and
-two classifier panels (right column): ARM 1 (R, ch1-3) and ARM 2 (L,
-ch4-6). Each panel shows host-side inference + Pi-side overlay parsed
-from "#pred,..." UART lines.
+ROLE
+    Host-PC visualisation + verification tool for the BSAU/CPCU
+    stack. Reads the 1 kHz raw EMG stream from the Pi over UART,
+    plots six waveforms, and runs the SAME RandomForest classifier
+    the Pi runs (models/arm.pkl) so the operator can compare host
+    inference against the Pi's inference on identical samples. The
+    Pi side overlays its own predictions via `#pred,...` lines.
 
-Pi side streams:
-    raw CSV     "v0,v1,v2,v3,v4,v5\\n"                      @ 1 kHz
-    predictions "#pred,ts,group,gesture,conf,cls:p,..."     @ 5 Hz/group
+DEPENDENCIES — what this script READS
+    Pi side (cpcu_dsp.py) producing two interleaved UART streams:
+        raw CSV     "v0,v1,v2,v3,v4,v5\\n"                    @ 1 kHz
+        predictions "#pred,ts,group,gesture,conf,cls:p,..."   per window
+    models/arm.pkl                                            joblib-saved
+                                                              {"model","scaler"}
 
-CLI:
-    --port /dev/ttyUSB0   (or COMx on Windows)
+CROSS-MODULE EFFECTS
+    - Filter cascade below MIRRORS cpcu_dsp.py::process_window
+      (decimate -> bandpass 20-450 Hz -> notch 50/100/200 Hz ->
+      envelope LP 3 Hz). Edit cutoffs in one without the other and
+      the host/Pi predictions stop agreeing.
+    - SELECTED_CHANNELS = [1..6] mirrors the BSAU board's first
+      six ADCs (ch7/ch8 unused on v3 BSAU). Re-mapping requires a
+      matching change in BSAU firmware and in gestures.json's
+      emg_channels assignment.
+    - The classifier reads `model.classes_` for ordering, so a
+      retrain that produces a different class set (count or names)
+      is picked up automatically here — but the four class colours
+      in CLASS_COLORS below may need a new entry.
+
+CLI
+    --port /dev/ttyUSB0     (Windows default: COM5)
     --baud 921600
     --model models/arm.pkl
 """
 import argparse
 import sys
 import threading
+import time
 import warnings
 from collections import deque
 
@@ -82,7 +103,9 @@ N200_B, N200_A = iirnotch(200 / NYQ, 30.0)
 LP_B,   LP_A   = butter(4, 3.0 / NYQ, btype="low")
 
 # ─────────────────────────────────────────────────────────────────────
-# MODELS — same arm.pkl drives both groups (shared muscle set)
+# MODEL — same arm.pkl drives both groups (shared muscle set).
+# Loaded ONCE; aliases below let the inference block address the two
+# arms symmetrically without duplicating ~5 MB of trees in memory.
 # ─────────────────────────────────────────────────────────────────────
 def load_model(path):
     try:
@@ -94,18 +117,18 @@ def load_model(path):
         sys.exit(1)
 
 
-model_R, scaler_R = load_model(args.model)
-model_L, scaler_L = load_model(args.model)
-CLASSES_R = list(model_R.classes_)
-CLASSES_L = list(model_L.classes_)
+model, scaler = load_model(args.model)
+model_R, scaler_R = model, scaler
+model_L, scaler_L = model, scaler
+CLASSES_R = list(model.classes_)
+CLASSES_L = list(model.classes_)
 
 # Print the exact class order so we can verify it matches what the
 # AI team trained on. If the model says "wrong gesture" (e.g. you
 # flex biceps and it shows hand), the order here may not match what
 # you expect — check against your training script.
-print(f"[monitor] ARM 1 (R) classes (in model order): {CLASSES_R}")
-print(f"[monitor] ARM 2 (L) classes (in model order): {CLASSES_L}")
-print(f"[monitor] ch1-3 fed to ARM 1, ch4-6 fed to ARM 2")
+print(f"[monitor] classes (in model order): {CLASSES_R}")
+print(f"[monitor] ch1-3 → ARM 1 (R)   ch4-6 → ARM 2 (L)")
 print(f"[monitor] If predictions seem swapped — your model's training "
       f"channel order may differ from BSAU's. Edit SELECTED_CHANNELS.")
 
@@ -126,6 +149,9 @@ last_valid        = np.full(NUM_CHANNELS, 2048, dtype=np.int32)
 new_samples_count = 0
 
 pi_predictions = {}   # {group: {"gesture", "conf", "classes": {name: prob}}}
+pi_pred_ts     = {}   # {group: monotonic time of last #pred line}
+pi_pred_lock   = threading.Lock()   # guards both dicts above
+PI_STALE_SEC   = 2.0  # show "stream stalled" if no #pred for this long
 
 try:
     ser = serial.Serial(args.port, args.baud, timeout=0)
@@ -153,15 +179,32 @@ def _parse_pred_line(line):
                 entry["classes"][cname] = float(cprob)
             except ValueError:
                 pass
-        pi_predictions[group] = entry
+        # Write both dicts atomically. The reader thread is the sole
+        # writer; the animate-thread (which calls get_pi_pred) holds
+        # the same lock for an O(1) snapshot, so the inner classes
+        # dict never gets iterated while it's being mutated.
+        with pi_pred_lock:
+            pi_predictions[group] = entry
+            pi_pred_ts[group]     = time.monotonic()
     except Exception:
         pass
 
 
+def get_pi_pred(group):
+    """Snapshot a group's last prediction (returns (entry|None, stale_bool))."""
+    with pi_pred_lock:
+        entry = pi_predictions.get(group)
+        ts    = pi_pred_ts.get(group, 0.0)
+    if not entry:
+        return None, True
+    return entry, (time.monotonic() - ts > PI_STALE_SEC)
+
+
 def serial_reader():
     global ring_idx, new_samples_count
-    leftover = b""
-    sel      = SELECTED_CHANNELS
+    leftover       = b""
+    sel            = SELECTED_CHANNELS
+    last_err_print = 0.0
     while not stop_event.is_set():
         try:
             n = ser.in_waiting
@@ -219,8 +262,15 @@ def serial_reader():
                         ring_buffer[i, ring_idx] = new_vals[i]
                     ring_idx          = (ring_idx + 1) % PLOT_WINDOW
                     new_samples_count += 1
-        except Exception:
-            stop_event.wait(0.01)
+        except Exception as e:
+            # Surface USB-disconnect / permission / decode errors to
+            # stderr, but rate-limit (once per 2 s) so a sustained
+            # fault doesn't flood the console.
+            now = time.monotonic()
+            if now - last_err_print > 2.0:
+                print(f"[monitor] serial error: {e}", file=sys.stderr)
+                last_err_print = now
+            stop_event.wait(0.05)
 
 
 reader_thread = threading.Thread(target=serial_reader, daemon=True)
@@ -266,24 +316,33 @@ def get_snapshot():
 # ─────────────────────────────────────────────────────────────────────
 # PLOT
 # ─────────────────────────────────────────────────────────────────────
-fig = plt.figure(figsize=(16, 9))
-fig.suptitle("CPCU UART Monitor — dual-arm classifier (R: ch1-3, L: ch4-6)",
-             fontsize=14)
+fig = plt.figure(figsize=(16, 9), facecolor="#fafafa")
+fig.suptitle("CPCU UART Monitor — dual-arm classifier  (R: ch1-3   L: ch4-6)",
+             fontsize=15, fontweight="bold", color="#222222")
 
-sig_axes = [fig.add_subplot(3, 3, slot) for slot in (1, 4, 7, 2, 5, 8)]
-PLOT_COLORS = ["blue", "red", "green", "orange", "purple", "brown"]
-LABELS      = ["R_Hand (ch1)", "R_Biceps (ch2)", "R_Triceps (ch3)",
-               "L_Hand (ch4)", "L_Biceps (ch5)", "L_Triceps (ch6)"]
+# ── EMG waveform grid: 3 rows × 3 cols, left two columns for ch1-6 ──
+sig_axes    = [fig.add_subplot(3, 3, slot) for slot in (1, 4, 7, 2, 5, 8)]
+PLOT_COLORS = ["#2266cc", "#cc3333", "#2a8a2a",
+               "#e08a1f", "#7a3fb8", "#8a5a2a"]
+LABELS      = ["R_Hand (ch1)",   "R_Biceps (ch2)", "R_Triceps (ch3)",
+               "L_Hand (ch4)",   "L_Biceps (ch5)", "L_Triceps (ch6)"]
 x_axis      = np.arange(PLOT_POINTS)
 initial_y   = np.full(PLOT_POINTS, 2048.0)
 lines = []
 for i, ax in enumerate(sig_axes):
+    # Centre baseline at 2048 (12-bit ADC midpoint) — gives the eye a
+    # reference for "rest" vs "active" without staring at the y-tick.
+    ax.axhline(2048, color="#cccccc", linewidth=0.8, linestyle="--", zorder=0)
     line, = ax.plot(x_axis, initial_y, color=PLOT_COLORS[i],
-                    label=LABELS[i], animated=True, linewidth=0.9)
+                    animated=True, linewidth=0.9)
     ax.set_ylim(0, 4500)
     ax.set_xlim(0, PLOT_POINTS - 1)
-    ax.legend(loc="upper right", fontsize=8)
-    ax.grid(True, alpha=0.3)
+    ax.set_title(LABELS[i], fontsize=9, fontweight="bold",
+                 color=PLOT_COLORS[i], loc="left", pad=2)
+    ax.tick_params(axis="both", labelsize=7, colors="#666666")
+    ax.grid(True, alpha=0.25)
+    for spine in ax.spines.values():
+        spine.set_color("#cccccc")
     lines.append(line)
 
 ax_R = fig.add_subplot(2, 3, 3)
@@ -292,41 +351,118 @@ for ax in (ax_R, ax_L):
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis("off")
 
 
+# ── Status-panel layout constants (axes-relative units) ──────────────
+# These were inline magic numbers in the old setup; pulling them out
+# here makes a future redesign one place to edit instead of two.
+PANEL_BORDER_PAD   = 0.02     # margin between panel content and ax edge
+TITLE_Y            = 0.93     # panel title baseline
+HOST_PILL_Y        = 0.78     # big HOST: PRED pill (center)
+HOST_CONF_Y        = 0.64     # confidence text (center)
+PI_OVERLAY_Y       = 0.55     # Pi-side mirror text (center)
+BAR_ROW_TOP_Y      = 0.42     # FIRST class-row center
+BAR_ROW_DY         = 0.09     # vertical spacing between class rows
+BAR_HEIGHT         = 0.055    # bar rect height
+LABEL_X            = 0.07     # class label left edge
+BAR_X              = 0.30     # bar column left edge
+BAR_W              = 0.50     # bar column width
+PCT_X              = 0.92     # percentage right edge (right-aligned)
+
+BAR_BG_COLOR       = "#dddddd"
+BAR_INACTIVE_COLOR = "#9aa6b2"
+PANEL_BORDER_COLOR = "#888888"
+
+
 def setup_status_panel(ax, title, classes):
-    ax.text(0.5, 0.96, title, ha="center", va="top",
-            fontsize=13, fontweight="bold", transform=ax.transAxes)
-    host_state = ax.text(0.5, 0.85, "HOST: —", ha="center", va="top",
-                         fontsize=16, fontweight="bold",
+    # ── Visible panel frame ──
+    border = plt.Rectangle((PANEL_BORDER_PAD, PANEL_BORDER_PAD),
+                           1.0 - 2 * PANEL_BORDER_PAD,
+                           1.0 - 2 * PANEL_BORDER_PAD,
+                           transform=ax.transAxes,
+                           fill=False,
+                           edgecolor=PANEL_BORDER_COLOR,
+                           linewidth=1.2, zorder=0)
+    ax.add_patch(border)
+
+    # ── Panel title ──
+    ax.text(0.5, TITLE_Y, title,
+            ha="center", va="center",
+            fontsize=12, fontweight="bold",
+            color="#222222",
+            transform=ax.transAxes)
+
+    # ── Big HOST pill ──
+    host_state = ax.text(0.5, HOST_PILL_Y, "HOST: —",
+                         ha="center", va="center",
+                         fontsize=15, fontweight="bold",
                          transform=ax.transAxes, animated=True,
-                         bbox=dict(facecolor="white", edgecolor="black",
-                                   boxstyle="round,pad=0.4"))
-    host_conf  = ax.text(0.5, 0.68, "Confidence: --", ha="center", va="top",
-                         fontsize=11, transform=ax.transAxes, animated=True)
-    pi_state   = ax.text(0.5, 0.58, "Pi: —", ha="center", va="top",
-                         fontsize=10, color="#555555",
-                         transform=ax.transAxes, animated=True,
-                         family="monospace")
+                         bbox=dict(facecolor="white",
+                                   edgecolor="#444444",
+                                   linewidth=1.0,
+                                   boxstyle="round,pad=0.5"))
+
+    host_conf = ax.text(0.5, HOST_CONF_Y, "Confidence: --",
+                        ha="center", va="center",
+                        fontsize=10, color="#333333",
+                        transform=ax.transAxes, animated=True)
+
+    pi_state = ax.text(0.5, PI_OVERLAY_Y, "Pi: (no #pred yet)",
+                       ha="center", va="center",
+                       fontsize=9, color="#777777",
+                       family="monospace",
+                       transform=ax.transAxes, animated=True)
+
+    # ── Class bars: aligned row layout ──
+    #   LABEL (left)  |  BAR (middle)  |  PCT (right)
+    # All three placed at the SAME y_center so they read as one row.
     bar_axes = []
+    pct_axes = []
     for i, cls in enumerate(classes):
-        y = 0.46 - i * 0.10
-        ax.text(0.05, y + 0.03, cls.upper(), fontsize=10,
-                transform=ax.transAxes, va="center")
-        bg = plt.Rectangle((0.05, y - 0.02), 0.90, 0.07,
-                           transform=ax.transAxes, color="#e0e0e0", zorder=1)
-        fg = plt.Rectangle((0.05, y - 0.02), 0.0, 0.07,
-                           transform=ax.transAxes, color="steelblue",
+        y_center = BAR_ROW_TOP_Y - i * BAR_ROW_DY
+        y_bar    = y_center - BAR_HEIGHT / 2
+
+        # Label (left column, fixed-width-ish via monospace)
+        ax.text(LABEL_X, y_center, cls.upper(),
+                fontsize=10, fontweight="bold",
+                ha="left", va="center",
+                color="#222222",
+                family="monospace",
+                transform=ax.transAxes)
+
+        # Bar background
+        bg = plt.Rectangle((BAR_X, y_bar), BAR_W, BAR_HEIGHT,
+                           transform=ax.transAxes,
+                           color=BAR_BG_COLOR, zorder=1)
+        # Bar foreground (animated, width = BAR_W * prob)
+        fg = plt.Rectangle((BAR_X, y_bar), 0.0, BAR_HEIGHT,
+                           transform=ax.transAxes,
+                           color=BAR_INACTIVE_COLOR,
                            zorder=2, animated=True)
         ax.add_patch(bg); ax.add_patch(fg)
         bar_axes.append(fg)
-    return host_state, host_conf, pi_state, bar_axes
+
+        # Percentage (right column, right-aligned)
+        pct = ax.text(PCT_X, y_center, "  0%",
+                      ha="right", va="center",
+                      fontsize=10, color="#333333",
+                      family="monospace",
+                      transform=ax.transAxes, animated=True)
+        pct_axes.append(pct)
+
+    return host_state, host_conf, pi_state, bar_axes, pct_axes
 
 
-hs_R, hc_R, pi_R, bars_R = setup_status_panel(ax_R, "ARM 1 — RIGHT (ch1-3)", CLASSES_R)
-hs_L, hc_L, pi_L, bars_L = setup_status_panel(ax_L, "ARM 2 — LEFT  (ch4-6)", CLASSES_L)
+# Single space in the title — proportional font means the old double
+# space didn't actually align with the line above. tight_layout +
+# ha="center" handles centering.
+hs_R, hc_R, pi_R, bars_R, pcts_R = setup_status_panel(
+    ax_R, "ARM 1 — RIGHT (ch1-3)", CLASSES_R)
+hs_L, hc_L, pi_L, bars_L, pcts_L = setup_status_panel(
+    ax_L, "ARM 2 — LEFT (ch4-6)",  CLASSES_L)
 
 animated = (list(lines)
             + [hs_R, hc_R, pi_R, hs_L, hc_L, pi_L]
-            + bars_R + bars_L)
+            + bars_R + bars_L
+            + pcts_R + pcts_L)
 
 
 hist_R = deque(maxlen=3)
@@ -346,21 +482,44 @@ def smooth(raw, history, current):
     return current
 
 
-def update_panel(group_name, hs, hc, pi_t, bars, conf, probs, classes, stable):
-    bg = CLASS_COLORS.get(stable, "yellow")
+def update_panel(group_name, hs, hc, pi_t, bars, pcts,
+                 conf, probs, classes, stable):
+    bg_color = CLASS_COLORS.get(stable, "#ffe066")
+
+    # Big HOST pill (top of panel)
     hs.set_text(f"HOST: {stable.upper()}")
-    hs.get_bbox_patch().set_facecolor(bg)
+    hs.get_bbox_patch().set_facecolor(bg_color)
+
     hc.set_text(f"Confidence: {conf:.1%}")
+
+    # Each class row: bar width = probability, label colour =
+    # highlight if active, percentage shown numerically.
     for i, cls in enumerate(classes):
-        bars[i].set_width(0.90 * probs[i])
-        bars[i].set_facecolor(bg if cls == stable else "steelblue")
-    p = pi_predictions.get(group_name)
-    if p:
-        cls_str = " ".join(f"{c}:{int(v*100):02d}"
+        bars[i].set_width(BAR_W * probs[i])
+        bars[i].set_facecolor(bg_color if cls == stable
+                              else BAR_INACTIVE_COLOR)
+        pcts[i].set_text(f"{int(probs[i] * 100):3d}%")
+
+    # Pi-side overlay. get_pi_pred returns (entry, stale_flag) under
+    # the lock; we never iterate p["classes"] while the reader thread
+    # might be mutating it.
+    p, stale = get_pi_pred(group_name)
+    if p and not stale:
+        cls_str = " ".join(f"{c}:{int(v * 100):02d}"
                            for c, v in p["classes"].items())
-        pi_t.set_text(f"Pi → {p['gesture'].upper()} {int(p['conf']*100)}%\n[{cls_str}]")
+        # Two lines: headline (gesture + conf) above the per-class
+        # breakdown. Single-line tended to overflow the panel width
+        # on long class lists.
+        pi_t.set_text(f"Pi → {p['gesture'].upper()} "
+                      f"{int(p['conf'] * 100)}%\n"
+                      f"[{cls_str}]")
+        pi_t.set_color("#444444")
+    elif p and stale:
+        pi_t.set_text("Pi: (stream stalled)")
+        pi_t.set_color("#cc4444")
     else:
         pi_t.set_text("Pi: (no #pred yet)")
+        pi_t.set_color("#999999")
 
 
 def update(frame):
@@ -389,7 +548,7 @@ def update(frame):
         raw_R   = CLASSES_R[int(probs_R.argmax())]
         conf_R  = float(probs_R.max())
         stable_R = smooth(raw_R, hist_R, stable_R)
-        update_panel("right_arm", hs_R, hc_R, pi_R, bars_R,
+        update_panel("right_arm", hs_R, hc_R, pi_R, bars_R, pcts_R,
                      conf_R, probs_R, CLASSES_R, stable_R)
 
         # Left arm — ch4-6
@@ -402,7 +561,7 @@ def update(frame):
         raw_L   = CLASSES_L[int(probs_L.argmax())]
         conf_L  = float(probs_L.max())
         stable_L = smooth(raw_L, hist_L, stable_L)
-        update_panel("left_arm", hs_L, hc_L, pi_L, bars_L,
+        update_panel("left_arm", hs_L, hc_L, pi_L, bars_L, pcts_L,
                      conf_L, probs_L, CLASSES_L, stable_L)
 
     return animated
