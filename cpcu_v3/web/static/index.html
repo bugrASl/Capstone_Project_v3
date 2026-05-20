@@ -29,6 +29,14 @@ body{font-family:'JetBrains Mono','Fira Code','Courier New',monospace;background
 .gc{font-size:11px;color:var(--fg2);margin-top:2px}
 .cbar{width:160px;height:5px;background:var(--bg3);border-radius:3px;margin-top:4px;overflow:hidden}
 .cfill{height:100%;border-radius:3px;transition:width .12s,background .2s}
+.grps{margin-top:14px;display:flex;flex-direction:column;gap:6px;pointer-events:none}
+.grp{background:rgba(20,20,28,.78);backdrop-filter:blur(6px);border:1px solid var(--bg3);border-radius:6px;padding:6px 10px;min-width:200px}
+.grp-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.grp-n{font-size:10px;color:var(--a);text-transform:uppercase;letter-spacing:1px;font-weight:600}
+.grp-s{font-size:14px;font-weight:700;text-transform:uppercase}
+.grp-c{font-size:10px;color:var(--fg2);font-variant-numeric:tabular-nums}
+.grp-bar{width:100%;height:3px;background:var(--bg3);border-radius:2px;margin-top:3px;overflow:hidden}
+.grp-bf{height:100%;border-radius:2px;transition:width .15s,background .2s}
 .sb{background:var(--bg2);border-left:1px solid #222;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:8px}
 .pn{background:var(--bg3);border-radius:6px;padding:10px}
 .pt{font-size:9px;text-transform:uppercase;letter-spacing:1.5px;color:var(--fg2);margin-bottom:6px}
@@ -87,6 +95,7 @@ body{font-family:'JetBrains Mono','Fira Code','Courier New',monospace;background
         <div class="gn" id="gl">—</div>
         <div class="gc" id="ct">confidence: —</div>
         <div class="cbar"><div class="cfill" id="cb"></div></div>
+        <div id="grps" class="grps"></div>
       </div>
     </div>
     <div class="sb">
@@ -278,7 +287,8 @@ let su=[1500,1500,1500,1500,1500,1500],gs='—',co=0,st='—',
 rms=Array(8).fill(0),cc=Array(8).fill(0),nc=4,
 hConsec=0,hNeeded=0,hType=3,hTypeName='idle',
 dPkts=0,dGaps=0,dInf=0,dLat=0,dOvf=0,dSafe=0,dStall=0,
-pktLat=0,seqAge=0,dspUs=0,ioReady=false,dspReady=false;
+pktLat=0,seqAge=0,dspUs=0,ioReady=false,dspReady=false,
+groups=[];   // [{name, state, confidence, classes:{name:pct}}, ...]
 
 // Build sidebar
 const slE=document.getElementById('sl');
@@ -315,6 +325,34 @@ document.getElementById('gl').textContent=gs;
 document.getElementById('ct').textContent=`confidence: ${(co*100)|0}%`;
 const cb=document.getElementById('cb');cb.style.width=(co*100)+'%';
 cb.style.background=co>.7?'var(--g)':co>.4?'var(--am)':'var(--r)';
+
+// Per-group panel — one card per gesture_group (right_arm, left_arm, …).
+// Each card shows current state, conf %, and top classes (sorted desc).
+const ge=document.getElementById('grps');
+if(groups.length){
+  let html='';
+  for(const g of groups){
+    const cp=g.confidence|0;
+    const col=cp>70?'var(--g)':cp>40?'var(--am)':'var(--r)';
+    // Top 3 classes sorted by pct desc
+    const cls=Object.entries(g.classes||{})
+                    .sort((a,b)=>b[1]-a[1])
+                    .slice(0,4)
+                    .map(([n,v])=>`${n}:${v}%`).join('  ');
+    html+=`<div class="grp">
+      <div class="grp-h">
+        <span class="grp-n">${g.name}</span>
+        <span class="grp-s">${g.state}</span>
+        <span class="grp-c">${cp}%</span>
+      </div>
+      <div class="grp-bar"><div class="grp-bf" style="width:${cp}%;background:${col}"></div></div>
+      <div class="grp-c" style="margin-top:3px">${cls||'—'}</div>
+    </div>`;
+  }
+  ge.innerHTML=html;
+} else if(!ge.innerHTML.includes('waiting')){
+  ge.innerHTML='<div class="grp" style="color:var(--fg2);font-size:11px">waiting for DSP…</div>';
+}
 
 SV.forEach((s,i)=>{
   document.getElementById('b'+i).style.width=Math.max(2,Math.min(100,((su[i]-s.mn)/(s.mx-s.mn))*100))+'%';
@@ -403,7 +441,8 @@ ioReady=d.io_ready||false;dspReady=d.dsp_ready||false;
 if(d.dsp){gs=d.dsp.gesture||'—';co=d.dsp.confidence||0;
 if(d.dsp.channel_rms)rms=d.dsp.channel_rms;
 if(d.dsp.class_confidence)cc=d.dsp.class_confidence;
-nc=d.dsp.num_classes||4}
+nc=d.dsp.num_classes||4;
+if(Array.isArray(d.dsp.groups))groups=d.dsp.groups}
 if(d.motor&&d.motor.servo_us)su=d.motor.servo_us;
 if(d.hysteresis){hConsec=d.hysteresis.consec;hNeeded=d.hysteresis.needed;hType=d.hysteresis.type;hTypeName=d.hysteresis.type_name||'idle'}
 if(d.latency){pktLat=d.latency.pkt_to_servo_us||0;seqAge=d.latency.seq_age||0;dspUs=d.latency.dsp_compute_us||0}

@@ -1122,15 +1122,39 @@ echo "  Open in a browser on this Pi:"
 echo "    http://localhost:8765"
 echo "    http://127.0.0.1:8765"
 echo
-echo "  Share with teammates on the same Wi-Fi:"
+# Classify each IP. 10.42.x is the default range for systemd-networkd /
+# NetworkManager Internet-Sharing over USB-Ethernet — i.e. only the
+# host PC can reach the Pi directly. We point that out so the user
+# knows to use the host-side socat tunnel (see `pi web` alias on host).
+has_wifi=0
+has_usb_tether=0
 for ip in $(hostname -I 2>/dev/null); do
     case "$ip" in
-        *:*|127.*|169.254.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*) ;;
-        *) echo "    http://$ip:8765" ;;
+        *:*|127.*|169.254.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*)
+            ;;
+        10.42.*)
+            echo "  USB-tether link (host PC only):"
+            echo "    http://$ip:8765   (only the host PC can reach this)"
+            has_usb_tether=1
+            ;;
+        *)
+            if [ "$has_wifi" = 0 ]; then
+                echo "  Share with teammates on the same Wi-Fi:"
+                has_wifi=1
+            fi
+            echo "    http://$ip:8765"
+            ;;
     esac
 done
 host="$(hostname 2>/dev/null)"
 [ -n "$host" ] && echo "  mDNS / Bonjour:    http://$host.local:8765"
+if [ "$has_wifi" = 0 ] && [ "$has_usb_tether" = 1 ]; then
+    echo
+    echo "  Pi has no Wi-Fi — phones cannot reach it directly."
+    echo "  Run this on the HOST PC to forward Pi:8765 to host LAN:"
+    echo "      socat TCP-LISTEN:8765,fork,reuseaddr TCP:\$(hostname -I | awk '{print \$1}' | tr -d ' '):8765"
+    echo "  ...then phones browse http://<host_wlan_ip>:8765"
+fi
 echo
 echo "  /api/config       — current gestures.json (categorized)"
 echo "  /                 — main dashboard"
@@ -1819,6 +1843,9 @@ cat << 'HELPEOF'
     ./launch.sh edit-motor   Gripper          edit limits (min/max/neutral)
     ./launch.sh rename-motor Gripper Claw     rename (updates all refs)
     ./launch.sh remove-motor Thumb            remove a servo
+    ./launch.sh set-pca-channel Gripper 12    re-wire servo to PCA ch 12
+                                              (validates 0-15 + uniqueness;
+                                               preflight auto-syncs runtime.json)
 
   GESTURE GROUPS  (v5: multiple classifiers, each with own EMG + model)
   ─────────────────────────────────────────────────────────────
@@ -1931,6 +1958,19 @@ cat << 'HELPEOF'
     ./launch.sh setup-uart && sudo reboot
     ./launch.sh tui --uart
     # on laptop: python3 scripts/uart_monitor.py --port /dev/ttyUSB0
+
+    # share web dashboard when Pi is on USB-tether (no Wi-Fi):
+    # ON THE HOST PC (one-time):
+    #   sudo pacman -S socat                                # Arch
+    #   sudo apt install socat                              # Debian/Ubuntu
+    # ON THE HOST PC, each session:
+    #   socat TCP-LISTEN:8765,fork,reuseaddr TCP:<pi_ip>:8765 &
+    # Phones on the same Wi-Fi as the host then browse to:
+    #   http://<host_wlan_ip>:8765
+
+    # change a servo's PCA9685 wiring without touching code:
+    ./launch.sh set-pca-channel Gripper 12   # gestures.json updated
+    ./launch.sh tui                          # preflight syncs runtime.json
 
 HELPEOF
 }

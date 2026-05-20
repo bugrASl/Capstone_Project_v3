@@ -149,6 +149,55 @@ static void build_state_frame(void)
         jw_kv_arr_f32(&jw, "channel_rms",
                       snap.channel_rms, WL_NUM_CHANNELS);
         jw_kv_u32(&jw, "inference_us", snap.inference_time_us);
+
+        /* Per-group block (multi-group v5 schema). cpcu_dsp.py writes
+         * one line per group to /tmp/cpcu_group_state.txt every window:
+         *     <name>\t<state>\t<conf_pct>\t<cls0>:<p0>,<cls1>:<p1>,...
+         * We forward those as an array of {name, state, confidence,
+         * classes:{...}} objects so the web dashboard can render all
+         * groups side-by-side (the IPC export only carries the primary
+         * group's prediction). Best-effort: silent if file is missing. */
+        jw_kv_arr_begin(&jw, "groups");
+        FILE *gf = fopen("/tmp/cpcu_group_state.txt", "r");
+        if(gf)
+        {
+            char line[512];
+            while(fgets(line, sizeof(line), gf))
+            {
+                size_t L = strlen(line);
+                while(L > 0 && (line[L-1] == '\n' || line[L-1] == '\r'))
+                    line[--L] = '\0';
+                if(L == 0) continue;
+                char *p_name = line;
+                char *p_state = strchr(p_name, '\t');   if(!p_state) continue; *p_state++ = '\0';
+                char *p_conf  = strchr(p_state, '\t');  if(!p_conf)  continue; *p_conf++  = '\0';
+                char *p_cls   = strchr(p_conf, '\t');   if(!p_cls)   continue; *p_cls++   = '\0';
+
+                jw_obj_begin(&jw);
+                    jw_kv_str(&jw, "name",       p_name);
+                    jw_kv_str(&jw, "state",      p_state);
+                    jw_kv_int(&jw, "confidence", atol(p_conf));
+                    /* Classes payload: "name:pct,name:pct,..." → object */
+                    jw_kv_obj_begin(&jw, "classes");
+                    char *tok = p_cls;
+                    while(tok && *tok)
+                    {
+                        char *next = strchr(tok, ',');
+                        if(next) { *next = '\0'; next++; }
+                        char *colon = strchr(tok, ':');
+                        if(colon)
+                        {
+                            *colon = '\0';
+                            jw_kv_int(&jw, tok, atol(colon + 1));
+                        }
+                        tok = next;
+                    }
+                    jw_obj_end(&jw);
+                jw_obj_end(&jw);
+            }
+            fclose(gf);
+        }
+        jw_arr_end(&jw);
     jw_obj_end(&jw);
 
     /* --- diagnostics counters --- */
@@ -517,37 +566,6 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data)
                 "{\"ch\":\"hello\",\"server\":\"cpcu_ws\","
                 "\"version\":\"v2.4.0\",\"ipc_version\":518}";
             mg_ws_send(c, welcome, strlen(welcome), WEBSOCKET_OP_TEXT);
-        }
-        else if(mg_match(hm->uri, mg_str("/api/config"), NULL))
-        {
-            /* Serve gestures.json verbatim. Try the installed copy
-             * first (/opt/cpcu/gestures.json — symlink created by
-             * setup_pi.sh), fall back to the repo path. Streaming
-             * the file directly avoids parsing/serializing the JSON
-             * twice and keeps the endpoint trivially up-to-date on
-             * SIGHUP reloads. */
-            const char *paths[] = {
-                "/opt/cpcu/gestures.json",
-                "config/gestures.json",
-                NULL
-            };
-            const char *path = NULL;
-            for(int i = 0; paths[i]; i++)
-            {
-                if(access(paths[i], R_OK) == 0) { path = paths[i]; break; }
-            }
-            if(path)
-            {
-                struct mg_http_serve_opts opts = {0};
-                opts.mime_types = "json=application/json";
-                mg_http_serve_file(c, hm, path, &opts);
-            }
-            else
-            {
-                mg_http_reply(c, 404,
-                              "Content-Type: application/json\r\n",
-                              "{\"error\":\"gestures.json not found\"}\n");
-            }
         }
         else
         {
