@@ -410,21 +410,77 @@ int main(int argc, char *argv[])
     uint32_t cfg_seq_seen = cfg_cache.config_seq;
     apply_runtime_smoother_cfg(&smooth, &cfg_cache);
 
-    /* Override the PCA driver's compile-time logical→physical channel
-     * map with the runtime-tunable values from runtime.json. This is
-     * what lets the operator wire servos to arbitrary PCA9685 channels
-     * (e.g. {0, 2, 4, 7, 11, 15} instead of {0, 1, 2, 3, 4, 5}). */
-    if(pca_ok)
+    /* Bench-test bypass: skip battery-critical checks if the operator
+     * set safety_ignore_battery=true in runtime.json. Without this, a
+     * disconnected BSAU battery (vbat_raw=0) instantly latches
+     * BATT_CRITICAL and forces SAFE state. */
+    SAFETY_SetIgnoreBattery(&safety,
+                            cfg_cache.safety_ignore_battery ? true : false);
+    if(cfg_cache.safety_ignore_battery)
+        LOG_W("SAFETY", "battery monitoring DISABLED "
+                        "(safety_ignore_battery=true in runtime.json)");
+
+    /* Apply ALL per-servo settings from cfg_cache to the PCA driver.
+     * Without this block the kernel was running with compile-time
+     * PCA_SERVO_MIN_US / MAX_US / CHANNEL — i.e. the runtime.json
+     * edits the operator made via the TUI editor were ignored at
+     * the PCA layer (smoother saw them, but the safety clamp didn't).
+     *
+     * Each line corresponds to a runtime.json field:
+     *   servo_min_us[]    → pca.servo_min[]    (clamp lower bound)
+     *   servo_max_us[]    → pca.servo_max[]    (clamp upper bound)
+     *   servo_pca_ch[]    → pca.servo_channel[](logical→physical map)
+     *
+     * servo_bias_us[] is applied per-tick in the I²C write block;
+     * see line 763.
+     */
+    for(int s = 0; s < PCA_SERVO_COUNT; s++)
     {
-        for(int i = 0; i < PCA_SERVO_COUNT; i++)
-        {
-            pca.servo_channel[i] = cfg_cache.servo_pca_ch[i];
-        }
-        LOG_I("PCA", "logical->physical map from runtime.json: "
-              "S0=%u S1=%u S2=%u S3=%u S4=%u S5=%u",
-              pca.servo_channel[0], pca.servo_channel[1], pca.servo_channel[2],
-              pca.servo_channel[3], pca.servo_channel[4], pca.servo_channel[5]);
+        pca.servo_min[s]     = cfg_cache.servo_min_us[s];
+        pca.servo_max[s]     = cfg_cache.servo_max_us[s];
+        pca.servo_channel[s] = cfg_cache.servo_pca_ch[s];
     }
+    /* AUTHORITATIVE override: /tmp/cpcu_servo_pca_ch.txt is written
+     * by launch.sh straight from gestures.json. If present, it wins
+     * over runtime.json — closes the foot-gun where a stale or
+     * un-synced runtime.json routed every PWM write to the wrong
+     * PCA9685 output and only one servo happened to line up. */
+    {
+        FILE *fch = fopen("/tmp/cpcu_servo_pca_ch.txt", "r");
+        if(fch)
+        {
+            int applied = 0;
+            char line[32];
+            while(applied < PCA_SERVO_COUNT && fgets(line, sizeof(line), fch))
+            {
+                char *end = NULL;
+                long v = strtol(line, &end, 10);
+                if(end != line && v >= 0 && v <= 15)
+                    pca.servo_channel[applied++] = (uint8_t)v;
+            }
+            fclose(fch);
+            if(applied == PCA_SERVO_COUNT)
+                LOG_I("PCA", "channel map from gestures.json digest: "
+                             "S0=%u S1=%u S2=%u S3=%u S4=%u S5=%u",
+                      pca.servo_channel[0], pca.servo_channel[1],
+                      pca.servo_channel[2], pca.servo_channel[3],
+                      pca.servo_channel[4], pca.servo_channel[5]);
+        }
+        else
+        {
+            LOG_I("PCA", "channel map from runtime.json: "
+                         "S0=%u S1=%u S2=%u S3=%u S4=%u S5=%u",
+                  pca.servo_channel[0], pca.servo_channel[1],
+                  pca.servo_channel[2], pca.servo_channel[3],
+                  pca.servo_channel[4], pca.servo_channel[5]);
+        }
+    }
+    LOG_I("PCA", "limits from runtime.json: "
+                 "min={%u,%u,%u,%u,%u,%u} max={%u,%u,%u,%u,%u,%u}",
+          pca.servo_min[0], pca.servo_min[1], pca.servo_min[2],
+          pca.servo_min[3], pca.servo_min[4], pca.servo_min[5],
+          pca.servo_max[0], pca.servo_max[1], pca.servo_max[2],
+          pca.servo_max[3], pca.servo_max[4], pca.servo_max[5]);
 
     /* v2.3.9: gravity compensation for weight-bearing joints.
      * Loaded from runtime.json; falls back to hardcoded defaults for
@@ -745,6 +801,17 @@ int main(int argc, char *argv[])
                 if(cfg_cache.config_seq != cfg_seq_seen)
                 {
                     apply_runtime_smoother_cfg(&smooth, &cfg_cache);
+                    /* Re-apply per-servo PCA settings too — same
+                     * three fields as boot. Without this an operator
+                     * editing servo limits in the TUI gets the new
+                     * vel/accel but the safety clamp keeps the old
+                     * bounds. */
+                    for(int s = 0; s < PCA_SERVO_COUNT; s++)
+                    {
+                        pca.servo_min[s]     = cfg_cache.servo_min_us[s];
+                        pca.servo_max[s]     = cfg_cache.servo_max_us[s];
+                        pca.servo_channel[s] = cfg_cache.servo_pca_ch[s];
+                    }
                     cfg_seq_seen = cfg_cache.config_seq;
                     LOG_I("IO", "smoother config re-applied "
                                 "(seq %u -> %u)",
