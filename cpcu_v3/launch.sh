@@ -2132,7 +2132,7 @@ on the CONFIG page).
 
 EOF
             ;;
-        tui|signal|collect|pca|kernel|ws|vendor|menu|attach|stop|install-service|install-ws-service|grant-caps)
+        tui|signal|collect|pca|kernel|ws|web|vendor|menu|attach|stop|install-service|install-ws-service|grant-caps)
             cat <<EOF
 
 ./launch.sh ${topic}
@@ -3270,7 +3270,7 @@ case "${MODE}" in
     nrf)                    run_nrf "$@" ;;
     smoother)               run_smoother "$@" ;;
     menu)                   show_menu ;;
-    ws)                     cmd_ws "$@" ;;
+    ws|web)                 cmd_ws "$@" ;;
 
     attach)                 cmd_attach ;;
     stop)                   cmd_stop ;;
