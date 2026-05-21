@@ -51,9 +51,9 @@ static char *write_runtime_json(void)
         "  \"servo_min_us\": [498, 1074, 1074, 1001, 1001, 976],\n"
         "  \"servo_max_us\": [2500, 1953, 1953, 2002, 2002, 1733],\n"
         "  \"servo_bias_us\": [0, 0, 0, 0, 0, 0],\n"
-        "  \"smooth_velocity_us_per_s\": [2000, 2000, 2000, 2000, 2000, 1200],\n"
-        "  \"smooth_accel_us_per_s2\":   [8000, 8000, 8000, 8000, 8000, 8000],\n"
-        "  \"smooth_deadband_us\":       [10, 10, 10, 10, 10, 10],\n"
+        "  \"smooth_velocity\": [60, 60, 60, 60, 60, 30],\n"
+        "  \"smooth_accel\":    [12, 12, 12, 12, 12, 6],\n"
+        "  \"smooth_deadband\": [10, 10, 10, 10, 10, 10],\n"
         "  \"interp_conf_floor_pct\": 40,\n"
         "  \"interp_conf_ceil_pct\":  85,\n"
         "  \"grip_open_us\":  1700,\n"
@@ -254,27 +254,29 @@ static void test_save_roundtrip(void)
     install_runtime_json(write_runtime_json());
     ED_Init();
 
-    /* Find smooth_velocity_us_per_s and dirty cell 0. */
+    /* Find smooth_velocity and dirty cell 0.
+     * Note: json_key in the editor (and the matching name in
+     * runtime.json) is the SHORT form. The struct field on the C
+     * side is still smooth_velocity_us_per_s for historical reasons
+     * (the values are us/tick @ 50 Hz despite the name). */
     int vel_idx = -1;
     for(int i = 0; i < ED_GetFieldCount(); i++)
-        if(strcmp(ED_GetField(i)->json_key, "smooth_velocity_us_per_s") == 0)
+        if(strcmp(ED_GetField(i)->json_key, "smooth_velocity") == 0)
         { vel_idx = i; break; }
     CHECK("ED05a", vel_idx >= 0, "found smooth_velocity field");
 
     /* Navigate down to the field. ED_Init resets cursor to (0, 0). */
     for(int i = 0; i < vel_idx; i++)
         ED_HandleKey(KEY_DOWN, &g_mock_ipc);
-    /* Set cell 0 to 1500. */
+    /* Set cell 0 to 80 (us/tick — within the 1..200 editor range). */
     ED_HandleKey('\n', &g_mock_ipc);
-    ED_HandleKey('1', &g_mock_ipc);
-    ED_HandleKey('5', &g_mock_ipc);
-    ED_HandleKey('0', &g_mock_ipc);
+    ED_HandleKey('8', &g_mock_ipc);
     ED_HandleKey('0', &g_mock_ipc);
     ED_HandleKey('\n', &g_mock_ipc);
     CHECK("ED05b", ED_GetField(vel_idx)->dirty[0],
           "vel[0] is dirty after entry");
-    CHECK("ED05c", ED_GetField(vel_idx)->draft[0] == 1500,
-          "vel[0] draft = 1500");
+    CHECK("ED05c", ED_GetField(vel_idx)->draft[0] == 80,
+          "vel[0] draft = 80");
 
     /* Trigger save. kernel_pid in mock is 0, so SIGHUP is skipped
      * but the file write still happens. */
@@ -294,16 +296,15 @@ static void test_save_roundtrip(void)
                                      err, sizeof(err));
     CHECK("ED05f", st == CFG_OK, "reloaded file: %s",
           st == CFG_OK ? "OK" : err);
-    CHECK("ED05g", reloaded.smooth_velocity_us_per_s[0] == 1500,
-          "disk value after save = %u (wanted 1500)",
+    CHECK("ED05g", reloaded.smooth_velocity_us_per_s[0] == 80,
+          "disk value after save = %u (wanted 80)",
           reloaded.smooth_velocity_us_per_s[0]);
 
-    /* Sanity: untouched cell preserved. Cell 5 was 1200 in our
+    /* Sanity: untouched cell preserved. Cell 5 was 30 in our
      * template (gripper preset). After our save touching cell 0, the
-     * patch rewrote the whole array, so cell 5 must remain 1200 from
-     * draft[5] (which equaled disk[5] = 1200). */
-    CHECK("ED05h", reloaded.smooth_velocity_us_per_s[5] == 1200,
-          "untouched cell 5 = %u (wanted 1200)",
+     * patch rewrote the whole array, so cell 5 must remain 30. */
+    CHECK("ED05h", reloaded.smooth_velocity_us_per_s[5] == 30,
+          "untouched cell 5 = %u (wanted 30)",
           reloaded.smooth_velocity_us_per_s[5]);
 }
 

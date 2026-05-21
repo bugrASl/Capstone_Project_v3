@@ -45,9 +45,9 @@ static ED_Field g_ed_fields[] = {
     { "servo_max_us",  "servo_max_us",  "us",      ED_KIND_U16, 6, 100, 2900, {0}, {0}, {0} },
     { "servo_bias_us", "servo_bias_us", "us",      ED_KIND_I16, 6, -100, 100, {0}, {0}, {0} },
     /* SMOOTHER (per-servo) */
-    { "smooth_velocity_us_per_s", "smooth_velocity",  "us/s",  ED_KIND_U16, 6, 100, 10000, {0}, {0}, {0} },
-    { "smooth_accel_us_per_s2",   "smooth_accel",     "us/s2", ED_KIND_U16, 6, 500, 50000, {0}, {0}, {0} },
-    { "smooth_deadband_us",       "smooth_deadband",  "us",    ED_KIND_U16, 6, 0,   50,    {0}, {0}, {0} },
+    { "smooth_velocity",          "smooth_velocity",  "us/tk", ED_KIND_U16, 6, 1,   200,   {0}, {0}, {0} },
+    { "smooth_accel",             "smooth_accel",     "us/tk2",ED_KIND_U16, 6, 1,   200,   {0}, {0}, {0} },
+    { "smooth_deadband",          "smooth_deadband",  "us",    ED_KIND_U16, 6, 0,   50,    {0}, {0}, {0} },
     /* DSP THRESHOLDS (scalar) */
     { "interp_conf_floor_pct", "interp_floor_pct",  "%",  ED_KIND_U8, 1, 0,  100, {0}, {0}, {0} },
     { "interp_conf_ceil_pct",  "interp_ceil_pct",   "%",  ED_KIND_U8, 1, 0,  100, {0}, {0}, {0} },
@@ -104,11 +104,11 @@ static void ed_field_load_from_cfg(ED_Field *f, const IPC_RuntimeConfig *cfg)
         for(int i = 0; i < 6; i++) f->disk[i] = cfg->servo_max_us[i];
     else if(strcmp(f->json_key, "servo_bias_us") == 0)
         for(int i = 0; i < 6; i++) f->disk[i] = cfg->servo_bias_us[i];
-    else if(strcmp(f->json_key, "smooth_velocity_us_per_s") == 0)
+    else if(strcmp(f->json_key, "smooth_velocity") == 0)
         for(int i = 0; i < 6; i++) f->disk[i] = cfg->smooth_velocity_us_per_s[i];
-    else if(strcmp(f->json_key, "smooth_accel_us_per_s2") == 0)
+    else if(strcmp(f->json_key, "smooth_accel") == 0)
         for(int i = 0; i < 6; i++) f->disk[i] = cfg->smooth_accel_us_per_s2[i];
-    else if(strcmp(f->json_key, "smooth_deadband_us") == 0)
+    else if(strcmp(f->json_key, "smooth_deadband") == 0)
         for(int i = 0; i < 6; i++) f->disk[i] = cfg->smooth_deadband_us[i];
     else if(strcmp(f->json_key, "interp_conf_floor_pct") == 0)
         f->disk[0] = cfg->interp_conf_floor_pct;
