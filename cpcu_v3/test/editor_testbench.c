@@ -51,8 +51,8 @@ static char *write_runtime_json(void)
         "  \"servo_min_us\": [498, 1074, 1074, 1001, 1001, 976],\n"
         "  \"servo_max_us\": [2500, 1953, 1953, 2002, 2002, 1733],\n"
         "  \"servo_bias_us\": [0, 0, 0, 0, 0, 0],\n"
-        "  \"smooth_velocity\": [60, 60, 60, 60, 60, 30],\n"
-        "  \"smooth_accel\":    [12, 12, 12, 12, 12, 6],\n"
+        "  \"smooth_velocity\": [3000, 3000, 3000, 3000, 3000, 1500],\n"
+        "  \"smooth_accel\":    [30000, 30000, 30000, 30000, 30000, 15000],\n"
         "  \"smooth_deadband\": [10, 10, 10, 10, 10, 10],\n"
         "  \"interp_conf_floor_pct\": 40,\n"
         "  \"interp_conf_ceil_pct\":  85,\n"
@@ -77,10 +77,19 @@ static char *write_runtime_json(void)
  * exit. Combined with a config/runtime.json symlink in the cwd
  * pointing at our temp file, this guarantees the editor reads what
  * the test wrote.
+ *
+ * We do the SAME back-up dance for config/runtime.json in the cwd —
+ * an earlier version of this file blindly `unlink`ed whatever was
+ * there, which silently deleted the user's real runtime.json if they
+ * ran `./launch.sh test-ipc` from the repo root.
  */
 static const char *g_opt_cfg_path        = "/opt/cpcu/config.json";
 static const char *g_opt_cfg_backup_path = "/opt/cpcu/config.json.test_backup";
 static int         g_opt_cfg_was_moved   = 0;
+
+static const char *g_cwd_runtime_path        = "config/runtime.json";
+static const char *g_cwd_runtime_backup_path = "config/runtime.json.test_backup";
+static int         g_cwd_runtime_was_moved   = 0;
 
 static void restore_opt_cpcu_config(void)
 {
@@ -91,6 +100,24 @@ static void restore_opt_cpcu_config(void)
                 "WARNING: couldn't restore %s from %s — please check manually\n",
                 g_opt_cfg_path, g_opt_cfg_backup_path);
         g_opt_cfg_was_moved = 0;
+    }
+}
+
+static void restore_cwd_runtime_json(void)
+{
+    /* Remove whatever's there now (symlink we created during the
+     * test, or stray regular file from a previous crashed run). */
+    unlink(g_cwd_runtime_path);
+    if(g_cwd_runtime_was_moved)
+    {
+        if(rename(g_cwd_runtime_backup_path, g_cwd_runtime_path) != 0)
+            fprintf(stderr,
+                "WARNING: couldn't restore %s from %s — your real\n"
+                "         runtime.json is still at the backup path.\n"
+                "         Run:  mv %s %s\n",
+                g_cwd_runtime_path, g_cwd_runtime_backup_path,
+                g_cwd_runtime_backup_path, g_cwd_runtime_path);
+        g_cwd_runtime_was_moved = 0;
     }
 }
 
@@ -116,11 +143,57 @@ static void install_runtime_json(const char *src)
         }
     }
 
-    /* Build a config/runtime.json in CWD as the second-tier lookup. */
+    /* Build a config/runtime.json in CWD as the second-tier lookup.
+     *
+     * IMPORTANT: if the cwd already has a real runtime.json (the
+     * user is running this testbench from their repo root), back it
+     * up FIRST so we can restore it on exit. The previous version
+     * just `unlink`'d whatever was here, silently destroying the
+     * user's calibration. */
     int rc = mkdir("config", 0755);
     (void)rc;       /* ok if exists */
-    unlink("config/runtime.json");
-    rc = symlink(src, "config/runtime.json");
+
+    if(!g_cwd_runtime_was_moved)
+    {
+        struct stat sb;
+        if(lstat(g_cwd_runtime_path, &sb) == 0)
+        {
+            if(S_ISLNK(sb.st_mode))
+            {
+                /* Stale symlink from a previous test run — safe to
+                 * remove without preserving. */
+                unlink(g_cwd_runtime_path);
+            }
+            else
+            {
+                /* Real file (user's actual runtime.json). Preserve
+                 * it by renaming, and register restore-on-exit. */
+                if(rename(g_cwd_runtime_path, g_cwd_runtime_backup_path) == 0)
+                {
+                    g_cwd_runtime_was_moved = 1;
+                    atexit(restore_cwd_runtime_json);
+                }
+                else
+                {
+                    fprintf(stderr,
+                        "ERROR: couldn't back up %s to %s (errno=%d).\n"
+                        "       Aborting test to avoid destroying your\n"
+                        "       calibration. Free up the backup path and retry.\n",
+                        g_cwd_runtime_path, g_cwd_runtime_backup_path, errno);
+                    exit(1);
+                }
+            }
+        }
+    }
+    else
+    {
+        /* Already backed up on a prior install_runtime_json call in
+         * the same process; just clear whatever symlink/file is
+         * currently at the runtime path before re-symlinking. */
+        unlink(g_cwd_runtime_path);
+    }
+
+    rc = symlink(src, g_cwd_runtime_path);
     if(rc != 0) { perror("symlink"); exit(1); }
 }
 
@@ -255,10 +328,11 @@ static void test_save_roundtrip(void)
     ED_Init();
 
     /* Find smooth_velocity and dirty cell 0.
-     * Note: json_key in the editor (and the matching name in
-     * runtime.json) is the SHORT form. The struct field on the C
-     * side is still smooth_velocity_us_per_s for historical reasons
-     * (the values are us/tick @ 50 Hz despite the name). */
+     * Note: json_key in the editor and the matching name in
+     * runtime.json are both the SHORT form. The C struct field is
+     * smooth_velocity_us_per_s (us/s, matching the smoother's
+     * internal dt_s-multiplied math). The file and editor agree on
+     * us/s — no conversion happens anywhere. */
     int vel_idx = -1;
     for(int i = 0; i < ED_GetFieldCount(); i++)
         if(strcmp(ED_GetField(i)->json_key, "smooth_velocity") == 0)
@@ -268,15 +342,18 @@ static void test_save_roundtrip(void)
     /* Navigate down to the field. ED_Init resets cursor to (0, 0). */
     for(int i = 0; i < vel_idx; i++)
         ED_HandleKey(KEY_DOWN, &g_mock_ipc);
-    /* Set cell 0 to 80 (us/tick — within the 1..200 editor range). */
+    /* Set cell 0 to 4000 (us/s — within the 100..10000 editor range,
+     * different from the template's 3000 so we can detect the patch). */
     ED_HandleKey('\n', &g_mock_ipc);
-    ED_HandleKey('8', &g_mock_ipc);
+    ED_HandleKey('4', &g_mock_ipc);
+    ED_HandleKey('0', &g_mock_ipc);
+    ED_HandleKey('0', &g_mock_ipc);
     ED_HandleKey('0', &g_mock_ipc);
     ED_HandleKey('\n', &g_mock_ipc);
     CHECK("ED05b", ED_GetField(vel_idx)->dirty[0],
           "vel[0] is dirty after entry");
-    CHECK("ED05c", ED_GetField(vel_idx)->draft[0] == 80,
-          "vel[0] draft = 80");
+    CHECK("ED05c", ED_GetField(vel_idx)->draft[0] == 4000,
+          "vel[0] draft = 4000");
 
     /* Trigger save. kernel_pid in mock is 0, so SIGHUP is skipped
      * but the file write still happens. */
@@ -286,25 +363,22 @@ static void test_save_roundtrip(void)
     CHECK("ED05e", ED_DirtyCount() == 0,
           "no dirty fields after save");
 
-    /* Reload from disk and confirm the value persisted. We do this
-     * by re-parsing the same file with CFG_LoadFromFile (the editor's
-     * ED_Init also reloads, but bypassing it gives a more direct
-     * round-trip check). */
+    /* Reload from disk and confirm the value persisted. */
     IPC_RuntimeConfig reloaded;
     char err[256] = {0};
     CFG_Status st = CFG_LoadFromFile("config/runtime.json", &reloaded,
                                      err, sizeof(err));
     CHECK("ED05f", st == CFG_OK, "reloaded file: %s",
           st == CFG_OK ? "OK" : err);
-    CHECK("ED05g", reloaded.smooth_velocity_us_per_s[0] == 80,
-          "disk value after save = %u (wanted 80)",
+    CHECK("ED05g", reloaded.smooth_velocity_us_per_s[0] == 4000,
+          "disk value after save = %u (wanted 4000)",
           reloaded.smooth_velocity_us_per_s[0]);
 
-    /* Sanity: untouched cell preserved. Cell 5 was 30 in our
+    /* Sanity: untouched cell preserved. Cell 5 was 1500 in our
      * template (gripper preset). After our save touching cell 0, the
-     * patch rewrote the whole array, so cell 5 must remain 30. */
-    CHECK("ED05h", reloaded.smooth_velocity_us_per_s[5] == 30,
-          "untouched cell 5 = %u (wanted 30)",
+     * patch rewrote the whole array, so cell 5 must remain 1500. */
+    CHECK("ED05h", reloaded.smooth_velocity_us_per_s[5] == 1500,
+          "untouched cell 5 = %u (wanted 1500)",
           reloaded.smooth_velocity_us_per_s[5]);
 }
 
@@ -322,9 +396,13 @@ int main(void)
     test_esc_cancels();
     test_save_roundtrip();
 
-    /* Cleanup */
+    /* Cleanup. We do NOT unlink config/runtime.json here — the
+     * atexit handler restore_cwd_runtime_json() takes care of
+     * removing the symlink and putting the user's real file back
+     * in place. Double-unlinking would race against atexit. */
     unlink(g_tmp_path);
-    unlink("config/runtime.json");
+    /* rmdir is safe — only removes the directory if empty. Won't
+     * destroy a config/ dir that the user populated. */
     rmdir("config");
 
     printf("\n======================================\n");

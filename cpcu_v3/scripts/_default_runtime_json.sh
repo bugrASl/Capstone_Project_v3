@@ -37,10 +37,10 @@ emit_default_runtime_json() {
     "// servo_bias_us": "Per-servo trim offset, signed micros (-100..+100).",
     "servo_bias_us": [ 0, 0, 0, 0, 0, 0 ],
 
-    "// smooth_velocity": "Max pulse delta per 50 Hz smoother tick (us/tick).",
-    "smooth_velocity": [ 60, 60, 60, 60, 60, 30 ],
-    "// smooth_accel":    "Max accel per tick^2 (us/tick^2). v_max reached in ~5 ticks (100 ms) for snappy-but-jerk-free motion.",
-    "smooth_accel":    [ 12, 12, 12, 12, 12, 6 ],
+    "// smooth_velocity": "Max pulse rate per servo, us/s. The 50 Hz smoother multiplies by dt=0.02s, so 3000 us/s = 60 us per tick. SG90 mech max ~6666 us/s; we cap at 45% for gearbox margin.",
+    "smooth_velocity": [ 3000, 3000, 3000, 3000, 3000, 1500 ],
+    "// smooth_accel":    "Max acceleration per servo, us/s^2. v_max reached in ~5 ticks (100 ms) for snappy-but-jerk-free motion.",
+    "smooth_accel":    [ 30000, 30000, 30000, 30000, 30000, 15000 ],
     "// smooth_deadband": "Hold-pose deadband in micros. 10 us ~= 2 PCA9685 LSBs.",
     "smooth_deadband": [ 10, 10, 10, 10, 10, 10 ],
 

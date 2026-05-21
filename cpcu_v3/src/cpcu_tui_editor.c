@@ -45,8 +45,8 @@ static ED_Field g_ed_fields[] = {
     { "servo_max_us",  "servo_max_us",  "us",      ED_KIND_U16, 6, 100, 2900, {0}, {0}, {0} },
     { "servo_bias_us", "servo_bias_us", "us",      ED_KIND_I16, 6, -100, 100, {0}, {0}, {0} },
     /* SMOOTHER (per-servo) */
-    { "smooth_velocity",          "smooth_velocity",  "us/tk", ED_KIND_U16, 6, 1,   200,   {0}, {0}, {0} },
-    { "smooth_accel",             "smooth_accel",     "us/tk2",ED_KIND_U16, 6, 1,   200,   {0}, {0}, {0} },
+    { "smooth_velocity",          "smooth_velocity",  "us/s",  ED_KIND_U16, 6, 100, 10000, {0}, {0}, {0} },
+    { "smooth_accel",             "smooth_accel",     "us/s2", ED_KIND_U16, 6, 500, 50000, {0}, {0}, {0} },
     { "smooth_deadband",          "smooth_deadband",  "us",    ED_KIND_U16, 6, 0,   50,    {0}, {0}, {0} },
     /* DSP THRESHOLDS (scalar) */
     { "interp_conf_floor_pct", "interp_floor_pct",  "%",  ED_KIND_U8, 1, 0,  100, {0}, {0}, {0} },

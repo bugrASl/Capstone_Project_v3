@@ -28,25 +28,25 @@
         0,
         0
     ],
-    "// smooth_velocity": "Max us/tick (50 Hz tick) per servo. SG90 mech max ~133 us/tick @ 6666 us/s; we cap at 50%% for gearbox margin. Order: Base, Elbow, Forearm, Wrist1, Wrist2, Gripper.",
+    "// smooth_velocity": "Max pulse rate per servo, us/s. The 50 Hz smoother multiplies by dt=0.02s, so 3000 us/s = 60 us per tick. SG90 mech max ~6666 us/s; we cap at 45%% for gearbox margin. Order: Base, Elbow, Forearm, Wrist1, Wrist2, Gripper.",
     "smooth_velocity": [
-        60,
-        60,
-        60,
-        60,
-        60,
-        30
+        3000,
+        3000,
+        3000,
+        3000,
+        3000,
+        1500
     ],
-    "// smooth_accel": "Max us/tick^2 per servo. Sized so v_max is reached in ~5 ticks (100 ms) \u2014 snappy without jerk.",
-    "smooth_accel": [
-        12,
-        12,
-        12,
-        12,
-        12,
-        6
+    "// smooth_accel":    "Max acceleration per servo, us/s^2. v_max reached in ~5 ticks (100 ms) for snappy-but-jerk-free motion. 30000 us/s^2 over 0.02s = 600 us/s velocity step per tick.",
+    "smooth_accel":    [
+        30000,
+        30000,
+        30000,
+        30000,
+        30000,
+        15000
     ],
-    "// smooth_deadband": "Hold-pose deadband in micros. 10 us = 2 PCA9685 LSBs (~4.88 us each). Below this PWM can't move anyway.",
+    "// smooth_deadband": "Hold-pose deadband in micros. 10 us ~= 2 PCA9685 LSBs (~4.88 us each). Below this PWM can't move anyway.",
     "smooth_deadband": [
         10,
         10,
@@ -64,9 +64,9 @@
         11,
         15
     ],
-    "// interp_conf_floor_pct": "SVM confidence floor for class hold (0-100).",
+    "// interp_conf_floor_pct": "Classifier confidence floor for class hold (0-100).",
     "interp_conf_floor_pct": 40,
-    "// interp_conf_ceil_pct": "SVM confidence ceiling above which class commits (0-100).",
+    "// interp_conf_ceil_pct": "Classifier confidence ceiling above which class commits (0-100).",
     "interp_conf_ceil_pct": 85,
     "// grip_firm_us": "Soft-grip firm-hold pulse width.",
     "grip_firm_us": 1100,
