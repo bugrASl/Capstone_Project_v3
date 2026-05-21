@@ -1,7 +1,7 @@
 {
     "// schema_version": "REQUIRED. Bump when removing/renaming fields.",
     "schema_version": 2,
-    "// servo_min_us": "Per-servo minimum pulse width. Order: S0=Base, S1=Upper, S2=Last, S3=Joint1, S4=Joint2, S5=Gripper.",
+    "// servo_min_us": "Per-servo minimum pulse width. Order: S0=Base, S1=Elbow, S2=Forearm, S3=Wrist1, S4=Wrist2, S5=Gripper.",
     "servo_min_us": [
         498,
         1074,
@@ -79,16 +79,16 @@
     "safety_ignore_battery": 1,
     "gravity_dir": [
         0,
-        -1,
-        1,
+        0,
+        0,
         0,
         0,
         0
     ],
     "gravity_scale_pct": [
         0,
-        30,
-        30,
+        35,
+        35,
         0,
         0,
         0

@@ -87,6 +87,18 @@ MAX_ADC_VALUE = 4095
 MIN_ADC_VALUE = 10
 MAX_DELTA     = 1300
 
+# ── Serial reader pacing ─────────────────────────────────────────────
+# Process at most MAX_BYTES_PER_ITER bytes per reader-loop iteration.
+# Holding the GIL longer than this blocks matplotlib's redraw and
+# makes the window look frozen. At 921600 baud (~92 KB/s) and 30 ms
+# animation interval, ~4 KB per iteration is plenty.
+MAX_BYTES_PER_ITER = 4096
+# If OS buffer holds more than DRAIN_THRESHOLD bytes, the link
+# clearly stalled and recovered with a burst. The ring is only 1 s
+# of data anyway — drop the oldest bytes instead of trying to read
+# them all (which would just freeze the UI for hundreds of ms).
+DRAIN_THRESHOLD    = 16384
+
 PLOT_DECIMATION  = 2
 ANIM_INTERVAL_MS = 25
 SERIAL_POLL_MS   = 1
@@ -153,6 +165,22 @@ pi_pred_ts     = {}   # {group: monotonic time of last #pred line}
 pi_pred_lock   = threading.Lock()   # guards both dicts above
 PI_STALE_SEC   = 2.0  # show "stream stalled" if no #pred for this long
 
+# ── Reader-side stats for the on-screen status line ──────────────────
+# Updated by serial_reader, read by the matplotlib update() callback.
+# Both happen in the same process so a normal threading.Lock is fine.
+# Mutating the inner dict is atomic enough under the GIL for our use
+# (we never iterate it from the consumer side without holding the
+# lock), but the lock keeps it future-proof if more fields are added.
+reader_stats = {
+    'total_samples':  0,      # cumulative valid samples committed
+    'last_sample_ts': 0.0,    # monotonic time of last successful commit
+    'dropped_bytes':  0,      # bytes drained from the OS buffer to avoid hang
+    'last_error':     '',     # short string of last serial exception
+    'last_error_ts':  0.0,    # monotonic time it happened
+}
+reader_stats_lock = threading.Lock()
+DATA_STALE_SEC = 0.5         # raw stream is "live" if a sample arrived this recently
+
 try:
     ser = serial.Serial(args.port, args.baud, timeout=0)
     ser.flushInput()
@@ -211,12 +239,41 @@ def serial_reader():
             if n == 0:
                 stop_event.wait(SERIAL_POLL_MS / 1000.0)
                 continue
+            # ── Bounded read ─────────────────────────────────────────
+            # On flaky USB-UART links (Windows, FTDI, CP210x with power
+            # save), in_waiting occasionally spikes to tens of kilobytes
+            # all at once after a stall. Processing the whole backlog
+            # in one loop iteration starves matplotlib of GIL time and
+            # makes the window appear frozen ("hangs like disconnected").
+            #
+            # We cap each read at MAX_BYTES_PER_ITER. If the OS buffer
+            # holds more than that, we yield back to the main loop and
+            # come back for the rest on the next tick — animation gets
+            # to redraw between iterations.
+            if n > MAX_BYTES_PER_ITER:
+                # Also: if the backlog is enormous (> DRAIN_THRESHOLD),
+                # there's no point reading the oldest bytes — the ring
+                # only holds PLOT_WINDOW samples (1 second @ 1 kHz) and
+                # we'd just overwrite what we just read. Drop the old
+                # bytes, keep the recent tail. Bump the dropped counter
+                # so the dashboard shows when this happens.
+                if n > DRAIN_THRESHOLD:
+                    ser.read(n - DRAIN_THRESHOLD)  # discard oldest
+                    with reader_stats_lock:
+                        reader_stats['dropped_bytes'] += (n - DRAIN_THRESHOLD)
+                    n = DRAIN_THRESHOLD
+                n = MAX_BYTES_PER_ITER
             data = leftover + ser.read(n)
             if b"\n" not in data:
                 leftover = data
                 continue
             chunks   = data.split(b"\n")
             leftover = chunks[-1]
+            # Batch all parsed samples into a local list; acquire
+            # ring_lock ONCE for the whole batch instead of once per
+            # sample. Cuts lock-acquire overhead from ~1000/s to
+            # ~50-100/s while reading the same data.
+            batch = []
             for raw in chunks[:-1]:
                 if not raw or len(raw) < 4:
                     continue
@@ -231,15 +288,10 @@ def serial_reader():
                 parts = line.split(",")
                 if len(parts) < CHANNELS_EXPECTED:
                     continue
-                # Parse + validate ATOMICALLY: build new values into a
-                # scratch list, only commit to last_valid + ring buffer
-                # if every channel parsed cleanly. Avoids two bugs:
-                #   1. np.empty leaves uninitialized garbage in the
-                #      array — a malformed line that aborts mid-loop
-                #      used to push random memory to the ring (the
-                #      "drops to 0" you see in the waveforms).
-                #   2. last_valid got partially poisoned even on a
-                #      bad line, shifting the spike-filter baseline.
+                # Parse + validate atomically — see notes in earlier
+                # version: the goal is "never partially-commit". A
+                # malformed line that aborts mid-parse must NOT poison
+                # last_valid or push half-junk to the ring.
                 new_vals = [None] * NUM_CHANNELS
                 ok = True
                 for i, ch in enumerate(sel):
@@ -248,28 +300,47 @@ def serial_reader():
                     except (ValueError, IndexError):
                         ok = False; break
                     lv = last_valid[i]
-                    if v < MIN_ADC_VALUE or v > MAX_ADC_VALUE \
-                       or abs(v - lv) > MAX_DELTA:
-                        v = int(lv)   # hold last good value
+                    if v < MIN_ADC_VALUE or v > MAX_ADC_VALUE:
+                        # Out of ADC range → bad sample, hold last.
+                        v = int(lv)
+                    elif abs(v - lv) > MAX_DELTA:
+                        # Spike filter. Hold last value but ALSO bump
+                        # last_valid HALFWAY toward the new sample, so
+                        # if the underlying signal genuinely shifted
+                        # (e.g., operator just flexed hard) we don't
+                        # get permanently stuck at the old baseline.
+                        v = int(lv + (v - lv) // 2)
                     new_vals[i] = v
                 if not ok:
                     continue
-                # Commit
+                # Commit to last_valid here (single-threaded path).
                 for i in range(NUM_CHANNELS):
                     last_valid[i] = new_vals[i]
+                batch.append(new_vals)
+            # ── Single ring-lock acquire for the whole batch ─────────
+            if batch:
                 with ring_lock:
-                    for i in range(NUM_CHANNELS):
-                        ring_buffer[i, ring_idx] = new_vals[i]
-                    ring_idx          = (ring_idx + 1) % PLOT_WINDOW
-                    new_samples_count += 1
+                    for new_vals in batch:
+                        for i in range(NUM_CHANNELS):
+                            ring_buffer[i, ring_idx] = new_vals[i]
+                        ring_idx           = (ring_idx + 1) % PLOT_WINDOW
+                        new_samples_count += 1
+                # Stats outside the ring lock so animate thread isn't
+                # waiting on it.
+                with reader_stats_lock:
+                    reader_stats['total_samples'] += len(batch)
+                    reader_stats['last_sample_ts'] = time.monotonic()
         except Exception as e:
-            # Surface USB-disconnect / permission / decode errors to
-            # stderr, but rate-limit (once per 2 s) so a sustained
-            # fault doesn't flood the console.
+            # Surface USB-disconnect / permission / decode errors. The
+            # dashboard's status line also displays this; stderr keeps
+            # the historical log.
             now = time.monotonic()
             if now - last_err_print > 2.0:
                 print(f"[monitor] serial error: {e}", file=sys.stderr)
                 last_err_print = now
+            with reader_stats_lock:
+                reader_stats['last_error']    = str(e)[:60]
+                reader_stats['last_error_ts'] = time.monotonic()
             stop_event.wait(0.05)
 
 
@@ -319,6 +390,16 @@ def get_snapshot():
 fig = plt.figure(figsize=(16, 9), facecolor="#fafafa")
 fig.suptitle("CPCU UART Monitor — dual-arm classifier  (R: ch1-3   L: ch4-6)",
              fontsize=15, fontweight="bold", color="#222222")
+
+# Top-of-figure status line. Shows live data rate, time since the last
+# sample, dropped-bytes counter, and the most recent serial error.
+# Whenever this turns red, the dashboard is "frozen" because the data
+# isn't flowing — never again silently confused about why a plot is
+# flat. Updated by update() from reader_stats.
+status_line = fig.text(0.5, 0.955, "starting up…",
+                       ha="center", va="center",
+                       fontsize=10, color="#444444",
+                       family="monospace", animated=True)
 
 # ── Unified layout via GridSpec ──────────────────────────────────────
 # The old layout mixed `fig.add_subplot(3, 3, ...)` (for EMG) with
@@ -494,7 +575,7 @@ hs_L, hc_L, pi_L, bars_L, pcts_L = setup_status_panel(
     ax_L, "ARM 2 — LEFT (ch4-6)",  CLASSES_L)
 
 animated = (list(lines)
-            + [hs_R, hc_R, pi_R, hs_L, hc_L, pi_L]
+            + [status_line, hs_R, hc_R, pi_R, hs_L, hc_L, pi_L]
             + bars_R + bars_L
             + pcts_R + pcts_L)
 
@@ -556,6 +637,60 @@ def update_panel(group_name, hs, hc, pi_t, bars, pcts,
         pi_t.set_color("#999999")
 
 
+# Rolling 1-second sample-rate tracker. We snapshot total_samples
+# once per second and report the delta as "samples/s". Window kept
+# short so the readout reacts within ~1 s of a stall.
+_rate_window_ts      = [time.monotonic()]
+_rate_window_samples = [0]
+_RATE_WINDOW_LEN     = 5      # 5 × ~1 s = 5 s of history
+
+def _compute_status_text():
+    """Build the top-of-figure status string from reader_stats."""
+    now = time.monotonic()
+    with reader_stats_lock:
+        total      = reader_stats['total_samples']
+        last_ts    = reader_stats['last_sample_ts']
+        dropped    = reader_stats['dropped_bytes']
+        last_err   = reader_stats['last_error']
+        last_err_t = reader_stats['last_error_ts']
+    # Rolling samples/sec
+    if now - _rate_window_ts[-1] >= 1.0:
+        _rate_window_ts.append(now)
+        _rate_window_samples.append(total)
+        if len(_rate_window_ts) > _RATE_WINDOW_LEN:
+            _rate_window_ts.pop(0)
+            _rate_window_samples.pop(0)
+    if len(_rate_window_samples) >= 2:
+        d_samples = _rate_window_samples[-1] - _rate_window_samples[0]
+        d_time    = _rate_window_ts[-1]      - _rate_window_ts[0]
+        rate_hz   = (d_samples / d_time) if d_time > 0 else 0.0
+    else:
+        rate_hz = 0.0
+
+    if last_ts == 0.0:
+        age_s   = float('inf')
+        age_str = "  no data yet"
+    else:
+        age_s   = now - last_ts
+        age_str = f"  age:{age_s*1000:5.0f}ms"
+
+    rate_str    = f"rate:{rate_hz:4.0f} Hz"
+    dropped_str = f"  dropped:{dropped // 1024:4d} KB"
+    err_str     = (f"  err: {last_err}"
+                   if last_err and now - last_err_t < 5.0 else "")
+
+    # Colour rule: red if no recent data, amber if dropped bytes
+    # recently, otherwise grey.
+    if age_s > DATA_STALE_SEC:
+        color = "#cc4444"     # stalled
+    elif dropped > 0 and rate_hz > 100:
+        color = "#cc8800"     # data flowing but we had to drain
+    else:
+        color = "#444444"     # healthy
+
+    return f"{rate_str}{age_str}{dropped_str}{err_str}", color
+
+
 def update(frame):
     global new_samples_count, stable_R, stable_L
 
@@ -563,6 +698,11 @@ def update(frame):
     display = snap[:, ::PLOT_DECIMATION] if PLOT_DECIMATION > 1 else snap
     for i, line in enumerate(lines):
         line.set_ydata(display[i])
+
+    # Update the top-of-figure status line every frame.
+    txt, col = _compute_status_text()
+    status_line.set_text(txt)
+    status_line.set_color(col)
 
     with ring_lock:
         do_predict = new_samples_count >= PREDICT_EVERY

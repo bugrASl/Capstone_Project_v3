@@ -61,9 +61,9 @@
                 "ceil_pct": 85
             },
             "hysteresis": {
-                "rest_to_active": 3,
+                "rest_to_active": 1,
                 "active_to_rest": 0,
-                "active_to_active": 3
+                "active_to_active": 1
             },
             "gestures": {
                 "rest": {
@@ -78,7 +78,7 @@
                     "mode": "velocity",
                     "channels": {
                         "Gripper": {
-                            "rate_us_s": -200,
+                            "rate_us_s": -400,
                             "snap": true
                         }
                     },
@@ -91,8 +91,11 @@
                 "flex": {
                     "mode": "velocity",
                     "channels": {
+                        "Forearm": {
+                            "rate_us_s": -500
+                        },
                         "Elbow": {
-                            "rate_us_s": 200
+                            "rate_us_s": 500
                         }
                     },
                     "audio": {
@@ -104,8 +107,11 @@
                 "ext": {
                     "mode": "velocity",
                     "channels": {
+                        "Forearm": {
+                            "rate_us_s": 500
+                        },
                         "Elbow": {
-                            "rate_us_s": -200
+                            "rate_us_s": -500
                         }
                     },
                     "audio": {
@@ -136,9 +142,9 @@
                 "ceil_pct": 85
             },
             "hysteresis": {
-                "rest_to_active": 3,
+                "rest_to_active": 1,
                 "active_to_rest": 0,
-                "active_to_active": 3
+                "active_to_active": 1
             },
             "gestures": {
                 "rest": {
@@ -153,11 +159,11 @@
                     "mode": "velocity",
                     "channels": {
                         "Gripper": {
-                            "rate_us_s": -400,
-                            "snap": true
+                            "rate_us_s": 300,
+                            "snap": false
                         }
                     },
-                    "grip_firm_us": 1080,
+                    "grip_firm_us": 1000,
                     "audio": {
                         "voice": "voice_grip",
                         "freq_hz": 550,
@@ -168,7 +174,7 @@
                     "mode": "velocity",
                     "channels": {
                         "Base": {
-                            "rate_us_s": 200
+                            "rate_us_s": 800
                         }
                     },
                     "audio": {
@@ -181,7 +187,7 @@
                     "mode": "velocity",
                     "channels": {
                         "Base": {
-                            "rate_us_s": -200
+                            "rate_us_s": -800
                         }
                     },
                     "audio": {

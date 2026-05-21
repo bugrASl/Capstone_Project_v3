@@ -67,7 +67,12 @@ emit_default_runtime_json() {
     "grip_stall_recover_ms": 2000,
 
     "// safety_ignore_battery": "Set to 1 for bench tests with no battery wired. Disables BATT_CRITICAL detection so the FSM doesn't latch SAFE on first packet.",
-    "safety_ignore_battery": 1
+    "safety_ignore_battery": 1,
+
+    "// gravity_dir":  "Per-servo gravity-comp direction: +1 = gravity pulls TOWARD increasing-us, -1 = pulls toward decreasing-us, 0 = no comp. Default is OFF (all zeros) — turn on per servo only after empirical tuning.",
+    "gravity_dir":        [ 0, 0, 0, 0, 0, 0 ],
+    "// gravity_scale_pct": "Compensation strength as % of nominal velocity (only used when gravity_dir != 0). 35 = boost UP-direction by 35%, dampen DOWN-direction by 35%. Empirically tuned for Elbow/Forearm slots; harmless when their dir is 0.",
+    "gravity_scale_pct":  [ 0, 35, 35, 0, 0, 0 ]
 }
 RUNTIMEEOF
     return $?

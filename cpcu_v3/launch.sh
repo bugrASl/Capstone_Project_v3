@@ -2135,6 +2135,12 @@ cat << 'HELPEOF'
                                                 (F=radio, B=batt, G=seqgap)
     ./launch.sh test-system                   live requirements check
                                                 (needs running kernel)
+    ./launch.sh test-report                   COMPREHENSIVE doc-grade test
+                                                Phase 1: 5×10s stability
+                                                Phase 2: per-gesture 5×conf
+                                                Phase 3: per-channel SNR
+                                                Writes Markdown+JSON report
+                                                under log/. ~5–15 min.
 
   CALIBRATION & TUNING
   ─────────────────────────────────────────────────────────────
@@ -2427,7 +2433,7 @@ Exit code: 0 if launch is OK, 1 if there's a fatal-class problem.
 
 EOF
             ;;
-        test-sw|test-ipc|test-hw|test-pca|test-signal|test-signal-demo|test-safety-demo)
+        test-sw|test-ipc|test-hw|test-pca|test-signal|test-signal-demo|test-safety-demo|test-system|test-report)
             cat <<'EOF'
 
 ./launch.sh test*
@@ -2463,6 +2469,28 @@ phase plus all earlier phases.
   ./launch.sh test-safety-demo
     cpcu_tui --demo with fault-injection hotkeys (F=radio loss,
     B=battery low, G=seq-gap storm, etc.).
+
+  ./launch.sh test-system
+    Live SYS-REQ verification against the running kernel. Quick
+    PASS/FAIL CI-style check. Needs cpcu_kernel + cpcu_dsp running.
+    Forwards CLI args to test/system_test.py.
+
+  ./launch.sh test-report   (COMPREHENSIVE, ~5–15 minutes)
+    Documentation-grade three-phase test:
+      Phase 1: 5 × 10 s system stability (latency, packet loss, rate)
+      Phase 2: 5 reps × (10 s prep + 10 s active) per gesture
+      Phase 3: per-channel SNR derived from Phase 1 + 2
+    Writes Markdown + JSON report under log/.
+    Needs cpcu_kernel + cpcu_dsp running and an operator in position.
+    Useful flags:
+      --no-phase2            quick Phase-1-only run
+      --reps N               reps per gesture (default 5)
+      --prep SEC             prep-time per rep (default 10)
+      --active SEC           active recording per rep (default 10)
+      --groups NAMES         comma list, e.g. right_arm,left_arm
+      --gestures NAMES       comma list, e.g. hand,flex,ext
+      --output-dir DIR       override log/ for reports
+      --quiet                less verbose console output
 
 EOF
             ;;
@@ -2780,6 +2808,64 @@ cmd_test_system() {
     log "Running system-level requirements verification..."
     log "  This requires cpcu_kernel + cpcu_io + cpcu_dsp to be running."
     log "  The test monitors live IPC data for the specified duration."
+    echo
+    exec python3 "${test_script}" "$@"
+}
+
+# ════════════════════════════════════════════════════════════════════════
+#  COMMAND: test-report (comprehensive documentation-grade test)
+# ════════════════════════════════════════════════════════════════════════
+#
+# Parallel to cmd_test_system but does a different, much longer job:
+#
+#   Phase 1  : 5 × 10 s stability captures (latency, packet loss,
+#              data rate). Operator sits still — used as SNR baseline.
+#   Break    : 30 s for operator to get into position.
+#   Phase 2  : For each gesture in every group of gestures.json,
+#              5 reps × (10 s prep + 10 s active recording window).
+#              Records MAX confidence per active window.
+#   Phase 3  : Per-channel SNR (signal-vs-noise dB) derived from the
+#              rest baseline of Phase 1 and the active RMS peaks of
+#              Phase 2.
+#
+# Writes a Markdown + JSON report under log/.
+#
+# CLI flags are forwarded to test_report.py. Examples:
+#   ./launch.sh test-report                          # full default
+#   ./launch.sh test-report --no-phase2              # quick Phase-1 only
+#   ./launch.sh test-report --reps 3 --prep 5        # shorter
+#   ./launch.sh test-report --groups right_arm       # one arm only
+#   ./launch.sh test-report --gestures hand,flex     # subset
+#
+# Kept separate from cmd_test_system because:
+#   - test_system is a quick PASS/FAIL CI check.
+#   - test-report is interactive (operator) and 5-15 minutes long.
+#   - Different output format (Markdown report vs PASS/FAIL log).
+cmd_test_report() {
+    LAUNCH_MODE="test-report"
+
+    if [ ! -e /dev/shm/cpcu_ipc ]; then
+        fatal "Kernel not running. Start with: ./launch.sh tui (then run test-report in SHELL window)"
+    fi
+
+    local test_script=""
+    if [ -f "${CPCU_ROOT}/test/test_report.py" ]; then
+        test_script="${CPCU_ROOT}/test/test_report.py"
+    elif [ -f "${CPCU_ROOT}/python/test_report.py" ]; then
+        test_script="${CPCU_ROOT}/python/test_report.py"
+    elif [ -f "/opt/cpcu/test/test_report.py" ]; then
+        test_script="/opt/cpcu/test/test_report.py"
+    elif [ -f "/opt/cpcu/python/test_report.py" ]; then
+        test_script="/opt/cpcu/python/test_report.py"
+    else
+        fatal "test_report.py not found. Re-run './launch.sh build', or place test_report.py under test/ or python/."
+    fi
+
+    log "Running comprehensive system test (Phase 1: stability,"
+    log "  Phase 2: per-gesture confidence, Phase 3: per-channel SNR)."
+    log "  Requires cpcu_kernel + cpcu_io + cpcu_dsp running."
+    log "  Operator participation required — total time ~5–15 minutes."
+    log "  Report will be written to: ${CPCU_ROOT}/log/test_report_<timestamp>.{md,json}"
     echo
     exec python3 "${test_script}" "$@"
 }
@@ -3672,6 +3758,7 @@ case "${MODE}" in
     test-signal-demo)       run_signal_demo ;;
     test-safety-demo)       cmd_test_phase "safety-demo" ;;
     test-system)            cmd_test_system "$@" ;;
+    test-report)            cmd_test_report "$@" ;;
 
     kernel|"")
         if [ -z "${MODE}" ] && [ -t 0 ] && [ -t 1 ]; then
