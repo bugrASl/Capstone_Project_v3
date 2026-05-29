@@ -46,12 +46,14 @@
                 "active": [
                     0,
                     1,
-                    2
+                    2,
+                    3
                 ],
                 "names": [
                     "R_Hand",
                     "R_Biceps",
-                    "R_Triceps"
+                    "R_Triceps",
+                    "R_Shoulder"
                 ]
             },
             "model_path": "models/arm.pkl",
@@ -119,20 +121,35 @@
                         "freq_hz": 660,
                         "freq_ms": 80
                     }
+                },
+                "wrist": {
+                    "mode": "velocity",
+                    "channels": {
+                        "Wrist1": {
+                            "rate_us_s": 500
+                        }
+                    },
+                    "audio": {
+                        "voice": "voice_wrist",
+                        "freq_hz": 880,
+                        "freq_ms": 80
+                    }
                 }
             }
         },
         "left_arm": {
             "emg_channels": {
                 "active": [
-                    3,
                     4,
-                    5
+                    5,
+                    6,
+                    7
                 ],
                 "names": [
                     "L_Hand",
                     "L_Biceps",
-                    "L_Triceps"
+                    "L_Triceps",
+                    "L_Shoulder"
                 ]
             },
             "model_path": "models/arm.pkl",
@@ -193,6 +210,19 @@
                     "audio": {
                         "voice": "voice_ext_l",
                         "freq_hz": 660,
+                        "freq_ms": 80
+                    }
+                },
+                "wrist": {
+                    "mode": "velocity",
+                    "channels": {
+                        "Wrist1": {
+                            "rate_us_s": -500
+                        }
+                    },
+                    "audio": {
+                        "voice": "voice_wrist_l",
+                        "freq_hz": 880,
                         "freq_ms": 80
                     }
                 }

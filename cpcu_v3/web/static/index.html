@@ -34,9 +34,10 @@
       corresponding UI block here (the receiver tolerates missing
       keys, so the failure mode is "stale numbers" not "error").
     - Channel labelling assumes gestures.json's right_arm + left_arm
-      groups on channels 0..5; see EMG_NAMES near the bottom of the
-      script. If gestures.json's emg_channels assignment changes,
-      update EMG_NAMES too.
+      groups on channels 0..7 — right_arm uses 0..3, left_arm uses
+      4..7; see EMG_NAMES near the bottom of the script. If
+      gestures.json's emg_channels assignment changes, update the
+      `enames` array in this file to match.
 -->
 <html lang="en">
 <head>
@@ -355,13 +356,18 @@ const clE=document.getElementById('cl');
 
 // Build EMG page.
 // Names mirror gestures.json's right_arm.emg_channels.names +
-// left_arm.emg_channels.names (channels 0..5). The hardcoded
-// "Forearm/Biceps/Triceps/ch3..ch7" labels that used to live here
-// were left over from a single-arm prototype and named ch0 after a
-// SERVO not a muscle; replaced with the actual R_/L_ assignments.
-// Channels 6-7 are not in active use on the v3 BSAU board.
+// left_arm.emg_channels.names. v3 BSAU board has 8 EMG front-ends
+// (INA333 × 8); per-arm assignment is:
+//   right_arm: ch0..ch3  -> R_Hand, R_Biceps, R_Triceps, R_Shoulder
+//   left_arm : ch4..ch7  -> L_Hand, L_Biceps, L_Triceps, L_Shoulder
+// The shoulder channels drive the 'wrist' gesture class — the
+// operator's shoulder muscle controls Wrist1 servo rotation on the
+// prosthetic. Labels here describe the MUSCLE (where the electrode
+// sits); gesture names in gestures.json describe the ROBOT ACTION.
+// Update this list if you re-wire the BSAU board OR change
+// gestures.json's emg_channels assignment.
 const ecE=document.getElementById('emg-cards');
-const enames=['R_Hand','R_Biceps','R_Triceps','L_Hand','L_Biceps','L_Triceps','ch6','ch7'];
+const enames=['R_Hand','R_Biceps','R_Triceps','R_Shoulder','L_Hand','L_Biceps','L_Triceps','L_Shoulder'];
 for(let i=0;i<8;i++){ecE.innerHTML+=`<div class="emg-card"><div class="emg-idx">${i}</div><div class="emg-info"><div class="emg-name">${enames[i]}</div><div class="emg-bw"><div class="emg-bf" id="em${i}"></div></div><div class="emg-val" id="ev${i}">rms: 0.000</div></div></div>`}
 
 function updateArm(){
