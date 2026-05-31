@@ -37,23 +37,23 @@
         3000,
         1500
     ],
-    "// smooth_accel":    "Max acceleration per servo, us/s^2. v_max reached in ~5 ticks (100 ms) for snappy-but-jerk-free motion. 30000 us/s^2 over 0.02s = 600 us/s velocity step per tick.",
+    "// smooth_accel":    "Max acceleration per servo, us/s^2. v_max reached in ~5 ticks (100 ms) at 30000 for snappy-but-jerk-free motion; Elbow/Forearm/Gripper softened to 15000 (200 ms to v_max) since those joints carry the most mechanical load and aggressive accel was demanding peak torque from the SG90s.",
     "smooth_accel":    [
         30000,
-        30000,
-        30000,
+        15000,
+        15000,
         30000,
         30000,
         15000
     ],
-    "// smooth_deadband": "Hold-pose deadband in micros. 10 us ~= 2 PCA9685 LSBs (~4.88 us each). Below this PWM can't move anyway.",
+    "// smooth_deadband": "Hold-pose deadband in micros. 4 us ~= 1 PCA9685 LSB (~4.88 us each). At this value the smoother starts ramping toward the new target as soon as DSP integrates above one LSB worth of change, instead of swallowing the first ~10us of slow-rate accumulation. Risk: more idle-hold servo chatter; SMOOTH_ShouldWrite still filters sub-LSB writes from reaching I²C so the chip side is fine.",
     "smooth_deadband": [
-        10,
-        10,
-        10,
-        10,
-        10,
-        10
+        4,
+        4,
+        4,
+        4,
+        4,
+        4
     ],
     "// servo_pca_ch": "Logical slot (0..5) -> physical PCA9685 channel (0..15). Same order as servo arrays above. Default is identity; override to wire to non-contiguous PCA channels.",
     "servo_pca_ch": [

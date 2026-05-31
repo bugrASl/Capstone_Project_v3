@@ -357,12 +357,13 @@ def load_gestures(path=GESTURES_PATH):
         {
             "name":         "right_arm",
             "gestures": {
-                "rest": {"mode": "freeze", "channels": {}},
-                "hand": {"mode": "velocity", "channels": {}},
-                "flex": {"mode": "velocity", "channels": {}},
-                "ext":  {"mode": "velocity", "channels": {}},
+                "rest":  {"mode": "freeze",   "channels": {}},
+                "hand":  {"mode": "velocity", "channels": {}},
+                "flex":  {"mode": "velocity", "channels": {}},
+                "ext":   {"mode": "velocity", "channels": {}},
+                "wrist": {"mode": "velocity", "channels": {}},
             },
-            "emg_channels": [0, 1, 2],
+            "emg_channels": [0, 1, 2, 3],
             "confidence":   default_conf,
             "hysteresis":   default_hyst,
             "model_path":   "models/arm.pkl",
@@ -370,12 +371,13 @@ def load_gestures(path=GESTURES_PATH):
         {
             "name":         "left_arm",
             "gestures": {
-                "rest": {"mode": "freeze", "channels": {}},
-                "hand": {"mode": "velocity", "channels": {}},
-                "flex": {"mode": "velocity", "channels": {}},
-                "ext":  {"mode": "velocity", "channels": {}},
+                "rest":  {"mode": "freeze",   "channels": {}},
+                "hand":  {"mode": "velocity", "channels": {}},
+                "flex":  {"mode": "velocity", "channels": {}},
+                "ext":   {"mode": "velocity", "channels": {}},
+                "wrist": {"mode": "velocity", "channels": {}},
             },
-            "emg_channels": [3, 4, 5],
+            "emg_channels": [4, 5, 6, 7],
             "confidence":   default_conf,
             "hysteresis":   default_hyst,
             "model_path":   "models/arm.pkl",
@@ -1274,6 +1276,17 @@ def _integrate_velocity(group_states, current_target, dt,
       * gesture mode "freeze" → that group contributes nothing
       * gripper (servo index 5) — clamp from below by the gesture's
         ``_grip_firm`` value so it never goes slack mid-grasp.
+      * Gripper with ``snap=true`` — bypass rate integration entirely
+        and pin the target to ``grip_firm`` while this gesture is
+        active. The downstream cpcu_smooth smoother still applies the
+        runtime velocity/accel caps, so the actual mechanical step
+        per PWM tick stays bounded — this is "snap to target at
+        smoother-max speed", not a true PCA9685 teleport. To get a
+        true teleport, IO would need a per-servo snap IPC bit; the
+        smoother-bounded version below is enough for the firm-grip
+        use case and keeps the existing safety guarantees intact.
+        ``snap=true`` on non-Gripper servos is silently ignored —
+        only Gripper has a well-defined "snap target" (grip_firm).
     """
     if all(gst.current_state == "rest" for gst in group_states):
         return current_target          # hold pose, don't snap
@@ -1287,9 +1300,17 @@ def _integrate_velocity(group_states, current_target, dt,
                                      gst.conf_floor, gst.conf_ceil,
                                      gst.conf_curve)
         rates     = gdef.get("_rates",     [0]*NUM_SERVOS)
+        snaps     = gdef.get("_snap",      [False]*NUM_SERVOS)
         grip_firm = gdef.get("_grip_firm", grip_firm_default)
 
         for s in range(NUM_SERVOS):
+            # Gripper snap path: jump target to grip_firm immediately.
+            # Smoother in cpcu_io will still ramp at v_max — no
+            # PCA-level teleport. Skip the rate integration entirely
+            # so a coexisting non-zero rate doesn't fight the snap.
+            if snaps[s] and s == 5:
+                current_target[s] = float(grip_firm)
+                continue
             if rates[s] == 0:
                 continue
             nv = current_target[s] + rates[s] * dt * scale

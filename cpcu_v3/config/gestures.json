@@ -59,8 +59,8 @@
             "model_path": "models/arm.pkl",
             "confidence": {
                 "curve": "quadratic",
-                "floor_pct": 40,
-                "ceil_pct": 85
+                "floor_pct": 25,
+                "ceil_pct": 70
             },
             "hysteresis": {
                 "rest_to_active": 1,
@@ -155,8 +155,8 @@
             "model_path": "models/arm.pkl",
             "confidence": {
                 "curve": "quadratic",
-                "floor_pct": 40,
-                "ceil_pct": 85
+                "floor_pct": 25,
+                "ceil_pct": 70
             },
             "hysteresis": {
                 "rest_to_active": 1,
@@ -176,7 +176,7 @@
                     "mode": "velocity",
                     "channels": {
                         "Gripper": {
-                            "rate_us_s": 300,
+                            "rate_us_s": 600,
                             "snap": false
                         }
                     },
