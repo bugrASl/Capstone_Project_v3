@@ -171,12 +171,19 @@ extern uint8_t   demo_conf;
 #define DATASET_OUT_DIR     "./datasets"
 /* Number of capture-label slots offered on the Dataset page.
  *
- * Matches the active model (models/arm.pkl): 4 alphabetical classes
- * — ext, flex, hand, rest — set in CLS_NAMES inside
+ * Matches the active model (models/arm.pkl): 5 alphabetical classes
+ * — ext, flex, hand, rest, trap — set in CLS_NAMES inside
  * cpcu_tui_render.c. To capture data for a wider gesture set later,
  * bump this AND extend CLS_NAMES in the same commit; the LEFT/RIGHT
- * label cycler in cpcu_tui.c uses this value as the modulus. */
-#define DATASET_LABEL_COUNT 4
+ * label cycler in cpcu_tui.c uses this value as the modulus.
+ *
+ * The 5th class is "trap" (trapezius/shoulder muscle), which the
+ * gesture-to-servo mapping in gestures.json renames to "wrist" via
+ * the class_remap field — but the TUI shows the model-side label
+ * because the Dataset capture page writes labels back into CSV
+ * files that the training pipeline expects in the model's original
+ * naming. See cpcu_dsp.py::class_remap docs for the full picture. */
+#define DATASET_LABEL_COUNT 5
 #define DATASET_PATH_MAX    256
 #define DATASET_LINE_MAX    192
 

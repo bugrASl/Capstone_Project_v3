@@ -118,6 +118,17 @@ const char     *SERVO_NAMES[]   =   {
     g_servo_name_buf[0], g_servo_name_buf[1], g_servo_name_buf[2],
     g_servo_name_buf[3], g_servo_name_buf[4], g_servo_name_buf[5]
 };
+
+/* EMG channel-name storage (cpcu_dsp.py drops /tmp/cpcu_emg_names.txt
+ * — one muscle name per line, 8 lines, channel-index order). Used by
+ * the EMG page mini-plots so the operator sees "R_Hand" instead of
+ * the generic "ch0". Fallback values match the v3 8-channel layout
+ * from gestures.json (channels 0–3 right arm, 4–7 left arm). */
+#define TUI_EMG_NAME_MAX 16
+static char     g_emg_name_buf[WL_NUM_CHANNELS][TUI_EMG_NAME_MAX] = {
+    "R_Hand",  "R_Biceps", "R_Triceps", "R_Shoulder",
+    "L_Hand",  "L_Biceps", "L_Triceps", "L_Shoulder"
+};
 /* Per-servo PWM limits.
  *
  * The hardcoded arrays below are the COMPILE-TIME FALLBACK matching
@@ -196,11 +207,43 @@ static void tui_reload_servo_names(void)
     fclose(f);
 }
 
+/* Re-read /tmp/cpcu_emg_names.txt — one EMG channel muscle name per
+ * line, channel-index order (ch0..ch7). Mirrors tui_reload_servo_names
+ * exactly. Idempotent; called from the EMG page on every draw so
+ * `./launch.sh reload` shows the new names immediately. */
+static void tui_reload_emg_names(void)
+{
+    FILE *f = fopen("/tmp/cpcu_emg_names.txt", "r");
+    if(!f) return;
+    char line[64];
+    int  i = 0;
+    while(i < WL_NUM_CHANNELS && fgets(line, sizeof(line), f))
+    {
+        size_t L = strlen(line);
+        while(L > 0 && (line[L-1] == '\n' || line[L-1] == '\r'))
+            line[--L] = '\0';
+        if(L == 0) continue;
+        if(L >= TUI_EMG_NAME_MAX) L = TUI_EMG_NAME_MAX - 1;
+        memcpy(g_emg_name_buf[i], line, L);
+        g_emg_name_buf[i][L] = '\0';
+        i++;
+    }
+    fclose(f);
+}
+
 const char     *CLS_NAMES[]     =   {
     /* Active model is models/arm.pkl, a sklearn RandomForestClassifier
-     * (200 trees) shared between the right_arm and left_arm groups —
+     * (100 trees) shared between the right_arm and left_arm groups —
      * same muscles, same classifier, alphabetical class order:
-     *     0 = ext     1 = flex     2 = hand     3 = rest
+     *     0 = ext     1 = flex     2 = hand     3 = rest     4 = trap
+     *
+     * The 5th class "trap" is the trapezius/shoulder muscle. Gestures
+     * .json's class_remap re-routes that label to the "wrist" gesture
+     * (which drives the Wrist1 servo) — the TUI keeps the model-side
+     * label here because (a) it matches the Python alphabetical sort
+     * exactly, and (b) the Dataset-capture page writes CSV files with
+     * these labels and the training pipeline expects "trap".
+     *
      * Used by:
      *   (a) the Overview/DSP page confidence bars, indexed by the
      *       num_classes-many slots of dsp_export.class_confidence[]
@@ -211,7 +254,7 @@ const char     *CLS_NAMES[]     =   {
      * AND bump DATASET_LABEL_COUNT to match — the cycler uses that
      * macro as the modulus, and the overview iterates up to
      * IPC_MAX_CLASSES so the IPC buffer has room for up to 10. */
-    "EXT", "FLEX", "HAND", "REST"
+    "EXT", "FLEX", "HAND", "REST", "TRAP"
 };
 
 const char *PAGE_TITLES[] = {
@@ -602,6 +645,11 @@ void draw_page_waves(int r, IPC_Context *ipc)
 {
     (void)ipc;
 
+    /* Pick up any updated muscle names from /tmp/cpcu_emg_names.txt
+     * (rewritten by cpcu_dsp.py on every gestures.json reload). Cheap:
+     * one fopen of an 8-line tmpfs file per draw. */
+    tui_reload_emg_names();
+
     /*---- Top bar: live BSAU flags of the most recent packet ----*/
     uint32_t head = atomic_load(&ipc->ctrl->sensor_head);
     uint8_t  last_flags = 0;
@@ -657,7 +705,8 @@ void draw_page_waves(int r, IPC_Context *ipc)
         bool clip    = clip_lo || clip_hi;
 
         attron(A_BOLD);
-        mvprintw(r, 1, "CHANNEL %d", wave_sel_ch);
+        mvprintw(r, 1, "CHANNEL %d  %s", wave_sel_ch,
+                 g_emg_name_buf[wave_sel_ch]);
         attroff(A_BOLD);
 
         mvprintw(r, 12, "Hz:");
@@ -715,7 +764,8 @@ void draw_page_waves(int r, IPC_Context *ipc)
 
             int lbl_cp = sel ? CP_MAGENTA : CP_NORMAL;
             attron(COLOR_PAIR(lbl_cp) | (sel ? A_BOLD : 0));
-            mvprintw(c_row, c_col, "%sch%d", sel ? ">" : " ", ch);
+            mvprintw(c_row, c_col, "%sch%d %s",
+                     sel ? ">" : " ", ch, g_emg_name_buf[ch]);
             attroff(COLOR_PAIR(lbl_cp) | (sel ? A_BOLD : 0));
 
             /* Stats over the rolling buffer */

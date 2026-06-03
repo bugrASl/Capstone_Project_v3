@@ -353,13 +353,14 @@ const clE=document.getElementById('cl');
 
 // Build EMG page.
 // Names mirror gestures.json's right_arm.emg_channels.names +
-// left_arm.emg_channels.names (channels 0..5). The hardcoded
-// "Forearm/Biceps/Triceps/ch3..ch7" labels that used to live here
-// were left over from a single-arm prototype and named ch0 after a
-// SERVO not a muscle; replaced with the actual R_/L_ assignments.
-// Channels 6-7 are not in active use on the v3 BSAU board.
+// left_arm.emg_channels.names (channels 0..7). v3 8-channel layout:
+//   ch0-3  right arm: R_Hand,  R_Biceps, R_Triceps, R_Shoulder
+//   ch4-7  left  arm: L_Hand,  L_Biceps, L_Triceps, L_Shoulder
+// Channel 3 / 7 are the trapezius/deltoid signals that drive the
+// "wrist" gesture (see gestures.json::class_remap → "trap":"wrist").
 const ecE=document.getElementById('emg-cards');
-const enames=['R_Hand','R_Biceps','R_Triceps','L_Hand','L_Biceps','L_Triceps','ch6','ch7'];
+const enames=['R_Hand','R_Biceps','R_Triceps','R_Shoulder',
+              'L_Hand','L_Biceps','L_Triceps','L_Shoulder'];
 for(let i=0;i<8;i++){ecE.innerHTML+=`<div class="emg-card"><div class="emg-idx">${i}</div><div class="emg-info"><div class="emg-name">${enames[i]}</div><div class="emg-bw"><div class="emg-bf" id="em${i}"></div></div><div class="emg-val" id="ev${i}">rms: 0.000</div></div></div>`}
 
 /* Neutral-pose calibration (degrees). At 1500 us on every servo the

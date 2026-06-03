@@ -630,6 +630,7 @@ def discover_model(model_path=""):
 
 GESTURES_DIGEST_PATH = "/tmp/cpcu_gestures_digest.txt"
 SERVO_NAMES_PATH     = "/tmp/cpcu_servo_names.txt"
+EMG_NAMES_PATH       = "/tmp/cpcu_emg_names.txt"
 GROUP_STATE_PATH     = "/tmp/cpcu_group_state.txt"
 
 
@@ -642,6 +643,40 @@ def _write_servo_names(servo_channels):
         with open(SERVO_NAMES_PATH, "w") as f:
             for name, _sd in sc[:NUM_SERVOS]:
                 f.write(name + "\n")
+    except Exception:
+        pass
+
+
+def _write_emg_names(path=GESTURES_PATH):
+    """Publish per-channel muscle names (one per line, channel-index
+    order ch0..ch7) for the C TUI to read instead of falling back to
+    the compile-time defaults baked into g_emg_name_buf in
+    cpcu_tui_render.c.
+
+    Reads gestures.json directly (cheap — runs once at DSP startup
+    and on `./launch.sh reload`) so we don't have to plumb the name
+    strings through load_gestures()'s parsed return shape. Walks every
+    gesture group's emg_channels.{active, names} arrays and indexes
+    into a flat NUM_EMG_CH-element output list by absolute channel
+    number. Channels not claimed by any group keep a "chN" placeholder
+    so the file always has exactly NUM_EMG_CH lines (the TUI reader
+    stops at NUM_EMG_CH anyway, but the placeholder makes the layout
+    obvious when the file is inspected by hand)."""
+    names = [f"ch{i}" for i in range(NUM_EMG_CH)]
+    try:
+        with open(path) as f:
+            gs = json.load(f)
+        groups = (gs.get("gesture_groups") or {}).values()
+        for gdef in groups:
+            ec     = gdef.get("emg_channels", {})
+            active = ec.get("active", [])
+            ns     = ec.get("names",  [])
+            for slot, ch in enumerate(active):
+                if 0 <= ch < NUM_EMG_CH and slot < len(ns) and ns[slot]:
+                    names[ch] = ns[slot]
+        with open(EMG_NAMES_PATH, "w") as f:
+            for n in names:
+                f.write(n + "\n")
     except Exception:
         pass
 
@@ -1550,6 +1585,7 @@ def run_inference(verbose=False, operator="default"):
     # be rewritten on SIGHUP if the kernel propagated SIGHUP to us).
     _write_gestures_digest(group_states, servo_channels)
     _write_servo_names(servo_channels)
+    _write_emg_names()
 
     # ── IPC ──
     ipc = IPCBridge()

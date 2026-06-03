@@ -34,6 +34,8 @@ cpcu_v3
 │   └── mongoose_stub.h
 ├── log
 ├── models
+│   ├── arm.pkl
+│   ├── dynamic_noise_thresholds.json
 │   └── velocity_map.json
 ├── nrf
 │   ├── nrf24l01.c
@@ -47,7 +49,8 @@ cpcu_v3
 │   ├── cpcu_audio_daemon.py
 │   ├── cpcu_calibrate.py
 │   ├── cpcu_dsp.py
-│   └── cpcu_ipc_bridge.py
+│   ├── cpcu_ipc_bridge.py
+│   └── test_report.py
 ├── scripts
 │   ├── _default_runtime_json.sh
 │   ├── add_gesture.sh
@@ -89,7 +92,8 @@ cpcu_v3
 │   ├── test_codec.c
 │   ├── test_dsp_pipeline.py
 │   ├── test_ipc_bridge.py
-│   └── test_launch_commands.sh
+│   ├── test_launch_commands.sh
+│   └── test_launch_features.sh
 ├── web
 │   ├── static
 │   │   └── index.html
@@ -103,4 +107,5 @@ cpcu_v3
 ├── CMakeLists.txt
 ├── cmdline_additions.txt
 ├── git_setup.sh
-└── launch.sh
+├── launch.sh
+└── monitor.py
