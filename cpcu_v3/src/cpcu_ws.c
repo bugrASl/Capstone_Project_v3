@@ -279,7 +279,21 @@ static void build_state_frame(void)
 
     /* --- servo positions from motor command --- */
     {
+        /* Neutral fallback (1500 us — matches PCA_SERVO_NEUTRAL and the
+         * DSP's SERVO_NEUTRAL). IPC_ReadMotorCmd leaves this buffer
+         * UNTOUCHED and returns false when there is no fresh command:
+         * at boot motor->seq is still 0 (IPC_Create memsets the region)
+         * and we pass last_ack = 0, so the first frames read as "no new
+         * data". Without this init the bridge forwarded uninitialised
+         * stack memory as servo_us — the large garbage values that also
+         * drove the 3-D arm to a random pose. Neutral is what cpcu_io
+         * holds the servos at during boot, so it is the truthful value
+         * to surface until the DSP publishes its first window command. */
+        const uint16_t NEUTRAL_US = 1500;
         uint16_t srv[IPC_NUM_SERVOS];
+        for(int i = 0; i < IPC_NUM_SERVOS; i++)
+            srv[i] = NEUTRAL_US;
+
         uint8_t gid = 0, cpct = 0;
         uint32_t lack = 0;
         IPC_ReadMotorCmd(&g_ipc, srv, &gid, &cpct, &lack);
