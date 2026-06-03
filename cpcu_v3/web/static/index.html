@@ -373,7 +373,8 @@ for(let i=0;i<8;i++){ecE.innerHTML+=`<div class="emg-card"><div class="emg-idx">
  * relative to this rest pose. Pitch joints rotate about Z (negative =
  * lean toward +X / forward); yaw + roll about Y. Tune in-browser —
  * 1 unit = 1 degree. */
-const NEUT_DEG = { baseYaw:0, shoulder:-37, elbow:-23, wristRoll:0, wristPitch:-29 };
+const NEUT_DEG = { baseYaw:0, shoulder:-37, elbow:-23, wristRoll:0, wristPitch:-29,
+                   gripperRest:18, gripperFull:31 };  // gripperRest = finger splay (deg) at rest
 const D2R = Math.PI/180;
 
 function updateArm(){
@@ -384,12 +385,17 @@ function updateArm(){
   J[2].rotation.z =  NEUT_DEG.elbow     *D2R - p2a(SV[2],su[2]);
   J[3].rotation.y =  NEUT_DEG.wristRoll *D2R + p2a(SV[3],su[3]);
   J[4].rotation.z =  NEUT_DEG.wristPitch*D2R - p2a(SV[4],su[4]);
-  // Gripper aperture: ap=0 fully open (fingers swung outward),
-  // ap=1 fully closed (fingers parallel, pads near touching).
-  // Scissor pivot: positive z-rotation swings the +Z finger outward.
-  const ap = (su[5]-SV[5].mn)/(SV[5].mx-SV[5].mn);
-  const maxSwing = 0.55;                  // radians outward at full open
-  const swing = (1-ap) * maxSwing;
+  // Gripper aperture (scissor splay). ap fraction: 0 at the min pulse,
+  // 1 at the max pulse. The real gripper RESTS medium-open, not parallel,
+  // so anchor the splay at the neutral pulse to NEUT_DEG.gripperRest and
+  // scale out to NEUT_DEG.gripperFull when opening, down to 0 (pads
+  // together) when closing. apN = aperture fraction at the neutral pulse.
+  const apN = (SV[5].ne - SV[5].mn)/(SV[5].mx - SV[5].mn);
+  const ap  = (su[5]    - SV[5].mn)/(SV[5].mx - SV[5].mn);
+  const rest = NEUT_DEG.gripperRest*D2R, full = NEUT_DEG.gripperFull*D2R;
+  const swing = ap <= apN
+      ? rest + (apN - ap)/Math.max(apN, 1e-3)     * (full - rest)   // opening
+      : rest * (1 - (ap - apN)/Math.max(1 - apN, 1e-3));            // closing → 0
   fR.rotation.z = -swing;                 // right finger swings -Z
   fL.rotation.z =  swing;                 // left finger swings +Z
 }
