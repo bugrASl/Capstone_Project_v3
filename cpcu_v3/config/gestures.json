@@ -57,6 +57,9 @@
                 ]
             },
             "model_path": "models/arm.pkl",
+            "class_remap": {
+                "trap": "wrist"
+            },
             "confidence": {
                 "curve": "quadratic",
                 "floor_pct": 25,
@@ -153,6 +156,9 @@
                 ]
             },
             "model_path": "models/arm.pkl",
+            "class_remap": {
+                "trap": "wrist"
+            },
             "confidence": {
                 "curve": "quadratic",
                 "floor_pct": 25,

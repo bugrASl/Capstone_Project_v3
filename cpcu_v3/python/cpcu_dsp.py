@@ -118,9 +118,13 @@ INSTALLED_MODEL = "/opt/cpcu/models"
 INSTALLED_CFG   = "/opt/cpcu/config.json"
 
 # Per-muscle envelope-floor thresholds produced by the AI team's
-# proccess.py at training time. Same muscle order on BOTH arms
-# (right=ch0-2, left=ch3-5 → s1=Hand, s2=Biceps, s3=Triceps), so a
-# single 3-element threshold vector serves both groups.
+# proccess.py at training time. Same muscle order on BOTH arms (each
+# arm has 4 channels: Hand, Biceps, Triceps, Shoulder), so a single
+# 4-element threshold vector serves both groups:
+#   s1 → Hand    (ch0 right / ch4 left)
+#   s2 → Biceps  (ch1 right / ch5 left)
+#   s3 → Triceps (ch2 right / ch6 left)
+#   s4 → Shoulder/Trapezius (ch3 right / ch7 left)
 #
 # If a window's MEAN envelope on every channel of a group is BELOW
 # its corresponding threshold, the muscle is not contracting and we
@@ -147,12 +151,25 @@ def _dynamic_thr_path(operator):
         return DYNAMIC_THR_DEFAULT_PATH
     return os.path.join(MODEL_DIR, f"dynamic_noise_thresholds_{operator}.json")
 
-_dyn_thresh = None              # cached (operator, [s1, s2, s3]) tuple
+_dyn_thresh = None              # cached threshold list (variable length)
 _dyn_thresh_op = None           # which operator the cache is for
+
+# Muscle-name labels for the print line, in s1..sN order. Truncated
+# to match the actual loaded threshold count so the log mirrors the
+# data exactly. Same order as the per-arm emg_channels block.
+_DYN_THR_KEYS  = ("s1", "s2", "s3", "s4")
+_DYN_THR_NAMES = ("hand", "biceps", "triceps", "shoulder")
 
 
 def _load_dynamic_thresholds(operator="default"):
-    """Read s1/s2/s3 → [thr_hand, thr_biceps, thr_triceps].
+    """Read s1/s2/s3/s4 → [hand, biceps, triceps, shoulder] thresholds.
+
+    Length-flexible: returns however many of s1..s4 are actually
+    present in the file (in order, stopping at the first missing
+    key). The caller (`_features_and_inference`) length-checks
+    against the group's channel count, so a 3-key file disables the
+    gate for 4-channel groups but still works for legacy 3-channel
+    setups.
 
     Lookup order (first hit wins):
       1. dynamic_noise_thresholds_<operator>.json  (operator-specific)
@@ -174,16 +191,18 @@ def _load_dynamic_thresholds(operator="default"):
         try:
             with open(path) as f:
                 d = json.load(f)
-            _dyn_thresh = [
-                float(d.get("s1", 0.0)),
-                float(d.get("s2", 0.0)),
-                float(d.get("s3", 0.0)),
-            ]
+            thr = []
+            for key in _DYN_THR_KEYS:
+                if key not in d:
+                    break          # stop at first missing key, preserve order
+                thr.append(float(d[key]))
+            _dyn_thresh    = thr
             _dyn_thresh_op = operator
             tag = "operator" if path != DYNAMIC_THR_DEFAULT_PATH else "default(Aleyna)"
-            print(f"[DSP] loaded noise-floor gates [{tag}] "
-                  f"hand={_dyn_thresh[0]:.1f} biceps={_dyn_thresh[1]:.1f} "
-                  f"triceps={_dyn_thresh[2]:.1f}  ({os.path.basename(path)})",
+            summary = "  ".join(f"{n}={v:.1f}"
+                                for n, v in zip(_DYN_THR_NAMES, thr))
+            print(f"[DSP] loaded noise-floor gates [{tag}] {summary}  "
+                  f"({os.path.basename(path)}, n={len(thr)})",
                   flush=True)
             return _dyn_thresh
         except FileNotFoundError:
@@ -458,7 +477,17 @@ def _update_servo_limits(servo_ch):
 def _build_group_list(gs, name_to_idx, default_conf, default_hyst):
     """Parse either schema-v5 (gesture_groups) or schema-v4 (flat gestures)
     into a uniform list-of-dicts. Each entry is fully self-contained so the
-    inference loop doesn't need to know which schema was on disk."""
+    inference loop doesn't need to know which schema was on disk.
+
+    ``class_remap`` translates model output class names → gesture names
+    in this group's ``gestures`` block. Use case: a model trained with
+    label ``trap`` (trapezius muscle) drives a gesture called ``wrist``
+    (the robot action that muscle triggers). The model's class set is
+    {ext, flex, hand, rest, trap}; gestures.json has {rest, hand, flex,
+    ext, wrist}. The default ``{"trap": "wrist"}`` makes that work
+    without renaming either side. Configurable per group so the two
+    arms can map differently if one day they use different models."""
+    DEFAULT_CLASS_REMAP = {"trap": "wrist"}
     groups = []
     gg     = gs.get("gesture_groups")
     if gg:
@@ -473,6 +502,7 @@ def _build_group_list(gs, name_to_idx, default_conf, default_hyst):
                 "confidence":   gdef.get("confidence", default_conf),
                 "hysteresis":   gdef.get("hysteresis", default_hyst),
                 "model_path":   gdef.get("model_path", ""),
+                "class_remap":  gdef.get("class_remap", DEFAULT_CLASS_REMAP),
             })
     elif "gestures" in gs:
         # v4 backward compatibility: wrap the flat dict as one synthetic group
@@ -486,6 +516,7 @@ def _build_group_list(gs, name_to_idx, default_conf, default_hyst):
             "confidence":   gs.get("confidence",  default_conf),
             "hysteresis":   gs.get("hysteresis",  default_hyst),
             "model_path":   gs.get("model_path", ""),
+            "class_remap":  gs.get("class_remap", DEFAULT_CLASS_REMAP),
         })
     return groups
 
@@ -853,19 +884,20 @@ def _uart_init():
         print(f"[DSP] UART: {e}", flush=True)
 
 
-_uart_last_good = [2048] * 6   # persistent baseline used by UART filter
+_uart_last_good = [2048] * NUM_EMG_CH   # persistent baseline used by UART filter
 
 
 def _uart_stream_samples(samples_batch):
     """Stream raw ADC samples line-by-line in predictX-compatible CSV.
 
-    ``samples_batch`` is the 3-D BSAU array shape (n_entries, 2, 8) that
-    cpcu_io drained from the ring. BSAU packs two 2 kHz samples into
-    each 1 kHz packet. We emit ONLY the FIRST sample per packet, giving
-    a clean 1 kHz UART stream — matches predictX.py / monitor.py's
-    FS=1000 expectation and matches the legacy "BSAU UART at 1 kHz"
-    pipeline the team has always used. Only channels 0..5 are emitted
-    (BSAU's 6-channel front-end).
+    ``samples_batch`` is the 3-D BSAU array shape (n_entries, 2, NUM_EMG_CH)
+    that cpcu_io drained from the ring. BSAU packs two 2 kHz samples
+    into each 1 kHz packet. We emit ONLY the FIRST sample per packet,
+    giving a clean 1 kHz UART stream — matches predictX.py /
+    monitor.py's FS=1000 expectation and matches the legacy "BSAU UART
+    at 1 kHz" pipeline the team has always used. Emits ALL NUM_EMG_CH
+    (8) channels in order: ch0..ch7 = R_Hand, R_Biceps, R_Triceps,
+    R_Shoulder, L_Hand, L_Biceps, L_Triceps, L_Shoulder.
 
     Applies the SAME spike filter as `ingest_sample()` so the host
     monitor.py doesn't see all-zero packets from wireless reacquisition
@@ -880,8 +912,8 @@ def _uart_stream_samples(samples_batch):
         # si=0 only: one sample per packet → 1 kHz output rate.
         for ei in range(n_e):
             row = samples_batch[ei, 0]
-            filtered = [0] * 6
-            for ch in range(6):
+            filtered = [0] * NUM_EMG_CH
+            for ch in range(NUM_EMG_CH):
                 raw = int(row[ch])
                 lv  = _uart_last_good[ch]
                 if raw < ADC_MIN_VALID or raw > ADC_MAX_VALID \
@@ -889,8 +921,7 @@ def _uart_stream_samples(samples_batch):
                     raw = lv
                 _uart_last_good[ch] = raw
                 filtered[ch] = raw
-            buf.append(f"{filtered[0]},{filtered[1]},{filtered[2]},"
-                       f"{filtered[3]},{filtered[4]},{filtered[5]}")
+            buf.append(",".join(str(v) for v in filtered))
         if buf:
             _uart.write(("\n".join(buf) + "\n").encode())
     except Exception:
@@ -958,6 +989,12 @@ class GroupState:
         # _load_dynamic_thresholds(self.operator) without taking a
         # second argument.
         self.operator     = operator
+        # Model output class → gestures.json key remap. Empty dict
+        # means "use raw class names". Default (set by _build_group_list)
+        # maps the trapezius/shoulder model class to the wrist gesture
+        # because the model was trained with muscle-name labels but
+        # gestures.json uses robot-action names.
+        self.class_remap  = dict(group_def.get("class_remap", {}))
 
         # Resolve prob_thresh precedence:
         #   1. Explicit arg (used by tests)
@@ -1040,9 +1077,19 @@ class GroupState:
                       f"({len(self.emg_channels)} ch × "
                       f"{NUM_FEATURES_PER_CHANNEL} feat/ch)", flush=True)
             for cls in classes:
-                if cls not in self.gestures:
-                    print(f"[DSP] {self.name}: model class '{cls}' not in "
-                          f"gestures — will fall back to neutral", flush=True)
+                # A class is "OK" if it's directly in gestures OR the
+                # remap routes it to a gesture that is. Without this
+                # remap check the model's "trap" class always
+                # produces a confusing warning for setups that map
+                # trap → wrist via class_remap.
+                gesture_key = self.class_remap.get(cls, cls)
+                if gesture_key not in self.gestures:
+                    print(f"[DSP] {self.name}: model class '{cls}' "
+                          f"(→ '{gesture_key}') not in gestures — "
+                          f"will fall back to neutral", flush=True)
+            if self.class_remap:
+                print(f"[DSP] {self.name}: class_remap={self.class_remap}",
+                      flush=True)
             print(f"[DSP] {self.name}: classes={classes}", flush=True)
 
     def ingest_sample(self, ei, si, samples):
@@ -1200,7 +1247,13 @@ def _features_and_inference(gst, rms_8ch, ipc):
     Xs    = gst.scaler.transform(X)
     probs = gst.model.predict_proba(Xs)[0]
     ai    = int(np.argmax(probs))
-    label = str(gst.model.classes_[ai])
+    raw_label = str(gst.model.classes_[ai])
+    # class_remap: model's training labels may not match gesture keys
+    # (e.g. model emits "trap" for trapezius/shoulder activation but
+    # gestures.json calls that gesture "wrist"). Remap before the
+    # hysteresis state machine so current_state always holds a
+    # gesture-key value that _integrate_velocity can look up.
+    label = gst.class_remap.get(raw_label, raw_label)
     conf  = float(probs[ai])
 
     # Hysteresis state-machine

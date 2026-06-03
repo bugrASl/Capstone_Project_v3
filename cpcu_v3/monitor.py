@@ -21,8 +21,10 @@ CROSS-MODULE EFFECTS
       (decimate -> bandpass 20-450 Hz -> notch 50/100/200 Hz ->
       envelope LP 3 Hz). Edit cutoffs in one without the other and
       the host/Pi predictions stop agreeing.
-    - SELECTED_CHANNELS = [1..6] mirrors the BSAU board's first
-      six ADCs (ch7/ch8 unused on v3 BSAU). Re-mapping requires a
+    - SELECTED_CHANNELS = [1..8] mirrors the BSAU board's eight ADCs.
+      Order on the UART stream is R_Hand, R_Biceps, R_Triceps,
+      R_Shoulder, L_Hand, L_Biceps, L_Triceps, L_Shoulder — the same
+      order as cpcu_dsp.py's NUM_EMG_CH layout. Re-mapping requires a
       matching change in BSAU firmware and in gestures.json's
       emg_channels assignment.
     - The classifier reads `model.classes_` for ordering, so a
@@ -78,9 +80,15 @@ args = parse_args()
 FS                = 1000
 WINDOW_SIZE       = 200
 PREDICT_EVERY     = 100
-CHANNELS_EXPECTED = 6
+CHANNELS_EXPECTED = 8
 PLOT_WINDOW       = 1000
-SELECTED_CHANNELS = [1, 2, 3, 4, 5, 6]
+# Channels 1..8 from the UART stream (1-based: ch1 = first CSV column).
+# Order MUST match cpcu_dsp.py NUM_EMG_CH (ch0..ch7 = R_Hand, R_Biceps,
+# R_Triceps, R_Shoulder, L_Hand, L_Biceps, L_Triceps, L_Shoulder).
+# The host model is single-arm × 4 channels; we feed it ch1..ch4 for
+# the right arm and ch5..ch8 for the left arm in the inference block
+# below.
+SELECTED_CHANNELS = [1, 2, 3, 4, 5, 6, 7, 8]
 NUM_CHANNELS      = len(SELECTED_CHANNELS)
 
 MAX_ADC_VALUE = 4095
@@ -140,7 +148,7 @@ CLASSES_L = list(model.classes_)
 # flex biceps and it shows hand), the order here may not match what
 # you expect — check against your training script.
 print(f"[monitor] classes (in model order): {CLASSES_R}")
-print(f"[monitor] ch1-3 → ARM 1 (R)   ch4-6 → ARM 2 (L)")
+print(f"[monitor] ch1-4 → ARM 1 (R)   ch5-8 → ARM 2 (L)")
 print(f"[monitor] If predictions seem swapped — your model's training "
       f"channel order may differ from BSAU's. Edit SELECTED_CHANNELS.")
 
@@ -149,6 +157,12 @@ CLASS_COLORS = {
     "hand": "#ffe4b5",
     "flex": "#add8e6",
     "ext":  "#ffcccb",
+    # Model's "trap" class maps to "wrist" gesture on the robot (see
+    # gestures.json::class_remap). Colour both keys so the panel
+    # background is the same whether the smoothed state happens to be
+    # the raw model class name or the remapped gesture key.
+    "trap":  "#dab8e0",
+    "wrist": "#dab8e0",
 }
 
 # ─────────────────────────────────────────────────────────────────────
@@ -388,7 +402,7 @@ def get_snapshot():
 # PLOT
 # ─────────────────────────────────────────────────────────────────────
 fig = plt.figure(figsize=(16, 9), facecolor="#fafafa")
-fig.suptitle("CPCU UART Monitor — dual-arm classifier  (R: ch1-3   L: ch4-6)",
+fig.suptitle("CPCU UART Monitor — dual-arm classifier  (R: ch1-4   L: ch5-8)",
              fontsize=15, fontweight="bold", color="#222222")
 
 # Top-of-figure status line. Shows live data rate, time since the last
@@ -426,28 +440,33 @@ status_line = _status_ax.text(0.5, 0.5, "starting up…",
 # some window sizes / DPI scales the EMG subplots get squeezed off the
 # visible area.
 #
-# Fix: a single 6-row × 3-col grid. EMG plots span 2 rows each (so
-# they're the same visible size as before), status panels span 3 rows
-# each. Same grid → tight_layout works → layout is deterministic.
+# Fix: a single 8-row × 3-col grid (was 6×3 in the 3-channel/arm
+# version). EMG plots span 2 rows each — 4 plots per column → 8 rows.
+# Status panels span 4 rows each → 8 rows. Everything uses the same
+# grid → tight_layout works → layout is deterministic.
 from matplotlib.gridspec import GridSpec
-gs = GridSpec(6, 3, figure=fig,
+gs = GridSpec(8, 3, figure=fig,
               left=0.06, right=0.97, top=0.92, bottom=0.06,
               wspace=0.25, hspace=0.55)
 
-# EMG waveform grid: left two columns × 3 stacked plots (each 2 rows
-# of the 6-row grid). Order matches LABELS below.
+# EMG waveform grid: left two columns × 4 stacked plots (each 2 rows
+# of the 8-row grid). Order matches LABELS below.
 sig_axes = [
     fig.add_subplot(gs[0:2, 0]),   # R_Hand
     fig.add_subplot(gs[2:4, 0]),   # R_Biceps
     fig.add_subplot(gs[4:6, 0]),   # R_Triceps
+    fig.add_subplot(gs[6:8, 0]),   # R_Shoulder
     fig.add_subplot(gs[0:2, 1]),   # L_Hand
     fig.add_subplot(gs[2:4, 1]),   # L_Biceps
     fig.add_subplot(gs[4:6, 1]),   # L_Triceps
+    fig.add_subplot(gs[6:8, 1]),   # L_Shoulder
 ]
-PLOT_COLORS = ["#2266cc", "#cc3333", "#2a8a2a",
-               "#e08a1f", "#7a3fb8", "#8a5a2a"]
-LABELS      = ["R_Hand (ch1)",   "R_Biceps (ch2)", "R_Triceps (ch3)",
-               "L_Hand (ch4)",   "L_Biceps (ch5)", "L_Triceps (ch6)"]
+PLOT_COLORS = ["#2266cc", "#cc3333", "#2a8a2a", "#9c27b0",
+               "#e08a1f", "#7a3fb8", "#8a5a2a", "#0288d1"]
+LABELS      = ["R_Hand (ch1)",     "R_Biceps (ch2)",
+               "R_Triceps (ch3)",  "R_Shoulder (ch4)",
+               "L_Hand (ch5)",     "L_Biceps (ch6)",
+               "L_Triceps (ch7)",  "L_Shoulder (ch8)"]
 x_axis      = np.arange(PLOT_POINTS)
 initial_y   = np.full(PLOT_POINTS, 2048.0)
 lines = []
@@ -473,9 +492,10 @@ for i, ax in enumerate(sig_axes):
         spine.set_color("#cccccc")
     lines.append(line)
 
-# Status panels: right column, two stacked panels each 3 rows tall.
-ax_R = fig.add_subplot(gs[0:3, 2])
-ax_L = fig.add_subplot(gs[3:6, 2])
+# Status panels: right column, two stacked panels each 4 rows tall
+# (fills the 8-row grid evenly with the 8 EMG plots on its left).
+ax_R = fig.add_subplot(gs[0:4, 2])
+ax_L = fig.add_subplot(gs[4:8, 2])
 for ax in (ax_R, ax_L):
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis("off")
 
@@ -584,9 +604,9 @@ def setup_status_panel(ax, title, classes):
 # space didn't actually align with the line above. tight_layout +
 # ha="center" handles centering.
 hs_R, hc_R, pi_R, bars_R, pcts_R = setup_status_panel(
-    ax_R, "ARM 1 — RIGHT (ch1-3)", CLASSES_R)
+    ax_R, "ARM 1 — RIGHT (ch1-4)", CLASSES_R)
 hs_L, hc_L, pi_L, bars_L, pcts_L = setup_status_panel(
-    ax_L, "ARM 2 — LEFT (ch4-6)",  CLASSES_L)
+    ax_L, "ARM 2 — LEFT (ch5-8)",  CLASSES_L)
 
 animated = (list(lines)
             + [status_line, hs_R, hc_R, pi_R, hs_L, hc_L, pi_L]
@@ -726,9 +746,9 @@ def update(frame):
     if do_predict:
         win = snap[:, -WINDOW_SIZE:] - 2048.0
 
-        # Right arm — ch1-3
+        # Right arm — ch1-4 (rows 0..3 in the ring buffer)
         feats_R = []
-        for i in range(3):
+        for i in range(4):
             cl, ev = process_live_signal(win[i])
             feats_R.extend(extract_features(cl, ev))
         fR      = np.asarray(feats_R, dtype=np.float32).reshape(1, -1)
@@ -739,9 +759,9 @@ def update(frame):
         update_panel("right_arm", hs_R, hc_R, pi_R, bars_R, pcts_R,
                      conf_R, probs_R, CLASSES_R, stable_R)
 
-        # Left arm — ch4-6
+        # Left arm — ch5-8 (rows 4..7 in the ring buffer)
         feats_L = []
-        for i in range(3, 6):
+        for i in range(4, 8):
             cl, ev = process_live_signal(win[i])
             feats_L.extend(extract_features(cl, ev))
         fL      = np.asarray(feats_L, dtype=np.float32).reshape(1, -1)
