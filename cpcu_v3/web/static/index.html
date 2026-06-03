@@ -225,7 +225,8 @@ const M={
   joint:   new THREE.MeshPhongMaterial({color:0x4a90d9,shininess:100,emissive:0x0e2540}),
   wrist:   new THREE.MeshPhongMaterial({color:0x6aa8e0,shininess:90}),
   hand:    new THREE.MeshPhongMaterial({color:0x3a3a44,shininess:40}),
-  finger:  new THREE.MeshPhongMaterial({color:0xc0c0c8,shininess:80,emissive:0x1a1a20})
+  finger:  new THREE.MeshPhongMaterial({color:0xc0c0c8,shininess:80,emissive:0x1a1a20}),
+  pad:     new THREE.MeshPhongMaterial({color:0xd99a2b,shininess:30})
 };
 function cy(rT,rB,h,m){const o=new THREE.Mesh(new THREE.CylinderGeometry(rT,rB,h,24),m);o.castShadow=true;o.receiveShadow=true;return o}
 function sp(r,m){const o=new THREE.Mesh(new THREE.SphereGeometry(r,18,14),m);o.castShadow=true;return o}
@@ -287,34 +288,31 @@ const handBody=bx(28,38,22,M.hand);handBody.position.y=24;j4.add(handBody);
 // is driven by direct finger position update in updateArm().
 const j5=new THREE.Group();j5.position.y=45;j4.add(j5);J.push(j5);
 
-/* Real gripper (xArm-style scissor jaw): a flat mounting plate on the
- * wrist with two curved finger arms that pivot from the front of the
- * plate. Open => arms angle OUTWARD in a Y; closed => arms point
- * forward in parallel. We model this as two finger Groups whose
- * rotation.z is driven by the gripper PWM. */
+/* Gear-driven two-finger claw — matches the printed end-effector:
+ * two meshing spur gears at the base, each carrying one long finger
+ * that curls INWARD onto a rubber grip pad. Each finger group's
+ * rotation.z is driven by the gripper PWM (see updateArm): a wider
+ * swing opens the V, swing 0 brings the pads together. The two gear /
+ * pivot centres sit on the X axis (±GEAR_R), so the claw opens in the
+ * X-Y plane and reads as a clean V from the front, like the real one. */
 
-// Mounting plate (rectangular, lies flat above the wrist)
-const handPlate=bx(34,6,28,M.hand);handPlate.position.y=4;j5.add(handPlate);
-// Central gear hub visible between the fingers
-const gripHub=cy(8,8,8,M.wrist);gripHub.position.y=10;j5.add(gripHub);
+// Mounting bracket the gears seat in (flat plate above the wrist)
+const handPlate=bx(42,6,22,M.hand);handPlate.position.y=4;j5.add(handPlate);
 
-/* Finger arms. Each is a Group pivoting near the front of the plate.
- * The arm itself extends along +Y of the group (i.e. "forward" in the
- * group's local frame). With group.rotation.z = 0 the arms point
- * forward; positive/negative z-rotation swings them apart. */
+const GEAR_R=8;
 function buildFinger(side){            // side = +1 right, -1 left
   const g=new THREE.Group();
-  g.position.set(0,8,side*9);          // pivot at the front-edge of the plate
-  // Curved arm: two box segments at an angle
-  const armProx=bx(8,28,6,M.finger);   // proximal segment (vertical from pivot)
-  armProx.position.y=14;g.add(armProx);
-  // Tip segment (angled inward like the photo)
-  const tip=new THREE.Group();
-  tip.position.y=28;
-  tip.rotation.z=side*-0.35;           // bend inward
-  const tipBox=bx(8,22,7,M.finger);tipBox.position.y=11;tip.add(tipBox);
-  // Pad at the tip (rubber-style grip surface)
-  const pad=bx(9,5,9,M.wrist);pad.position.y=22;tip.add(pad);
+  g.position.set(side*GEAR_R,9,0);     // pivot at this finger's gear centre
+  // drive gear (disc faces the viewer; the two discs mesh at the centre)
+  const gear=cy(GEAR_R,GEAR_R,7,M.wrist);gear.rotation.x=Math.PI/2;g.add(gear);
+  const hub =cy(GEAR_R*0.5,GEAR_R*0.5,7.6,M.joint);hub.rotation.x=Math.PI/2;g.add(hub);
+  // proximal finger segment (long, +Y from the gear)
+  const prox=bx(7,42,9,M.finger);prox.position.y=22;g.add(prox);
+  // knuckle, then the inward-curling tip segment carrying the grip pad
+  const knuck=cy(5,5,11,M.joint);knuck.rotation.x=Math.PI/2;knuck.position.y=43;g.add(knuck);
+  const tip=new THREE.Group();tip.position.y=43;tip.rotation.z=side*0.40;   // curl inward
+  const tipBox=bx(7,30,9,M.finger);tipBox.position.y=15;tip.add(tipBox);
+  const pad=bx(11,11,13,M.pad);pad.position.y=30;tip.add(pad);             // rubber grip pad
   g.add(tip);
   return g;
 }
