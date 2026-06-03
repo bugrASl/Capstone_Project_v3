@@ -396,10 +396,24 @@ fig.suptitle("CPCU UART Monitor — dual-arm classifier  (R: ch1-3   L: ch4-6)",
 # Whenever this turns red, the dashboard is "frozen" because the data
 # isn't flowing — never again silently confused about why a plot is
 # flat. Updated by update() from reader_stats.
-status_line = fig.text(0.5, 0.955, "starting up…",
-                       ha="center", va="center",
-                       fontsize=10, color="#444444",
-                       family="monospace", animated=True)
+#
+# IMPORTANT — must live on an AXES, not on the figure itself.
+# matplotlib >= 3.7's blit machinery does {a.axes for a in artists}
+# and calls ax._get_view() on each. A fig.text(...) artist has
+# axes=None, which crashes blit with:
+#   AttributeError: 'NoneType' object has no attribute '_get_view'
+# So we add a thin invisible axes at the top strip just for hosting
+# this text. The position is outside the GridSpec — figure-absolute
+# coordinates, sits between the suptitle (~y=0.98) and the plots
+# (gridspec top=0.92).
+_status_ax = fig.add_axes([0.05, 0.945, 0.90, 0.025], frameon=False)
+_status_ax.set_xticks([]); _status_ax.set_yticks([])
+_status_ax.set_xlim(0, 1); _status_ax.set_ylim(0, 1)
+_status_ax.axis("off")
+status_line = _status_ax.text(0.5, 0.5, "starting up…",
+                              ha="center", va="center",
+                              fontsize=10, color="#444444",
+                              family="monospace", animated=True)
 
 # ── Unified layout via GridSpec ──────────────────────────────────────
 # The old layout mixed `fig.add_subplot(3, 3, ...)` (for EMG) with
