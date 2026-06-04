@@ -1112,6 +1112,16 @@ class GroupState:
         self.conf_ceil    = cc.get("ceil_pct",  85) / 100.0
         if self.conf_floor >= self.conf_ceil:
             self.conf_floor, self.conf_ceil = 0.40, 0.85
+        # low_conf_to_rest: safety behaviour for the case where the
+        # classifier's argmax is an ACTIVE gesture but its confidence
+        # is below conf_floor. With this flag True (default) we treat
+        # that as "intent unclear → halt" and snap the state to "rest";
+        # with it False we hold the prior active state, matching the
+        # AI team's predict_ch4.py reference behaviour (which can leave
+        # the arm slewing if no single active class wins clearly).
+        # Override per-arm in gestures.json:
+        #     "confidence": { ..., "low_conf_to_rest": false }
+        self.low_conf_to_rest = bool(cc.get("low_conf_to_rest", True))
 
         # Hysteresis — debounce ML predictions to prevent jitter.
         # Defaults tuned from bench testing:
@@ -1401,8 +1411,21 @@ def _update_hysteresis(gst, label, conf):
         return
 
     # ── Non-rest transitions: confidence-gated + vote-counted ────────
-    # Low-confidence prediction: skip without punishing prior good votes.
+    # Low-confidence prediction: by default we fall back to "rest"
+    # rather than holding the prior active state. Rationale: if no
+    # active class scored above conf_floor, the operator's intent is
+    # genuinely ambiguous — and the safe direction is to halt motion,
+    # not to keep slewing in whatever direction the prior gesture
+    # commanded.
+    #
+    # The opt-out (low_conf_to_rest = false in gestures.json) restores
+    # the predict_ch4.py-equivalent "hold prior state" behaviour for
+    # operators who prefer fewer rest-stuttering events at the cost of
+    # occasional missed halts on noisy active gestures.
     if conf <= gst.prob_thresh:
+        if gst.low_conf_to_rest and gst.current_state != "rest":
+            gst.current_state = "rest"
+            gst.consec_count  = 0
         return
 
     if gst.current_state == "rest":
