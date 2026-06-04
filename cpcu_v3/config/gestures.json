@@ -62,8 +62,8 @@
             },
             "confidence": {
                 "curve": "quadratic",
-                "floor_pct": 25,
-                "ceil_pct": 70,
+                "floor_pct": 40,
+                "ceil_pct": 85,
                 "low_conf_to_rest": true
             },
             "hysteresis": {
@@ -162,8 +162,8 @@
             },
             "confidence": {
                 "curve": "quadratic",
-                "floor_pct": 25,
-                "ceil_pct": 70,
+                "floor_pct": 40,
+                "ceil_pct": 85,
                 "low_conf_to_rest": true
             },
             "hysteresis": {
