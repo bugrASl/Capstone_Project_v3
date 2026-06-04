@@ -886,40 +886,66 @@ def confidence_scale(conf_frac, floor, ceil, curve="quadratic"):
 # Two payload formats are multiplexed on the same /dev/ttyAMA0 link at
 # 921600 baud, distinguished by a single leading character:
 #
-#   1. RAW-SAMPLE LINE  (no prefix, just CSV ints)
-#         "<ch0>,<ch1>,<ch2>,<ch3>,<ch4>,<ch5>\n"
-#      Emitted at 2 kHz — one line per BSAU sample-pair entry (after
-#      ring drain). This is byte-for-byte the format predictX.py reads
-#      from BSAU's UART, so monitor.py is a direct port: same parser,
-#      same filter chain, same model invocation.
+#   1. RAW-SAMPLE LINE  (no prefix, just CSV ints, 8 fields)
+#         "<ch0>,<ch1>,<ch2>,<ch3>,<ch4>,<ch5>,<ch6>,<ch7>\n"
+#      Emitted at 1 kHz — one line per BSAU sample-pair entry, taking
+#      the first of the two oversamples in each packet. Matches the
+#      predictX.py / monitor.py expectation (FS=1000).
 #
 #   2. PREDICTION LINE  (prefix '#', for sanity / debug overlay)
 #         "#pred,<ts_ms>,<group>,<gesture>,<conf>\n"
-#      Emitted at the inference rate (~5 Hz). monitor.py can ignore
-#      these (lines starting with '#' don't parse as 6-int CSV).
+#      Emitted at the inference rate (10 Hz). monitor.py's parser
+#      treats any line starting with '#' as metadata (skips CSV parse).
 #
-# Budget: 6 channels × ~5 chars × 2000 lines/s ≈ 60 kB/s, well under
-# 921600 baud's 92 kB/s usable bandwidth.
+# Budget: 8 channels × ~5 chars × 1000 lines/s ≈ 40 kB/s, comfortably
+# under 921600 baud's 92 kB/s usable bandwidth (~43% utilisation).
+#
+# BACKPRESSURE — CRITICAL
+#   The host monitor.py briefly stops reading every 100 ms to run its
+#   own inference. If the Pi-side serial write blocks during that gap,
+#   it blocks the ENTIRE DSP main loop (drain stops, IPC ring backs up,
+#   next drain emits a catch-up burst → host sees "stops then continues"
+#   pattern). We avoid that with two layers of protection:
+#     (1) Serial(write_timeout=0.010)  — write attempts time out after
+#         10 ms (longer than one drain period, shorter than two), so a
+#         genuinely-stalled host never freezes inference.
+#     (2) `out_waiting` check          — if more than UART_BACKLOG_BYTES
+#         are already queued in the OS buffer, drop this whole batch
+#         silently. Better to lose one 10-line burst than to pile up.
+#   Both layers also protect against the rare case of an OS scheduler
+#   hiccup that pauses the tty kernel thread briefly.
 
-UART_PORT = os.environ.get("CPCU_UART_DEBUG", "")
-UART_BAUD = int(os.environ.get("CPCU_UART_BAUD", "921600"))
-_uart     = None
+UART_PORT           = os.environ.get("CPCU_UART_DEBUG", "")
+UART_BAUD           = int(os.environ.get("CPCU_UART_BAUD", "921600"))
+UART_WRITE_TIMEOUT  = 0.010   # 10 ms — see backpressure docblock above
+UART_BACKLOG_BYTES  = 8192    # ~200 ms of UART data; drop new batches above this
+_uart               = None
 
 
 def _uart_init():
-    """Open the debug serial port if CPCU_UART_DEBUG was set by launch.sh."""
+    """Open the debug serial port if CPCU_UART_DEBUG was set by launch.sh.
+
+    Uses a short write_timeout (10 ms — longer than one DRAIN_PERIOD_S
+    so well-behaved hosts never hit it, shorter than two so a genuinely
+    stalled host doesn't freeze the inference loop). See backpressure
+    docblock above."""
     global _uart
     if not UART_PORT:
         return
     try:
         import serial
-        _uart = serial.Serial(UART_PORT, UART_BAUD, timeout=0)
-        print(f"[DSP] UART stream → {UART_PORT} @ {UART_BAUD} baud", flush=True)
+        _uart = serial.Serial(UART_PORT, UART_BAUD,
+                              timeout=0,
+                              write_timeout=UART_WRITE_TIMEOUT)
+        print(f"[DSP] UART stream → {UART_PORT} @ {UART_BAUD} baud "
+              f"(write_timeout={UART_WRITE_TIMEOUT*1000:.0f}ms, "
+              f"backlog_drop={UART_BACKLOG_BYTES}B)", flush=True)
     except Exception as e:
         print(f"[DSP] UART: {e}", flush=True)
 
 
 _uart_last_good = [2048] * NUM_EMG_CH   # persistent baseline used by UART filter
+_uart_drops     = {"samples": 0, "predictions": 0}   # diagnostics
 
 
 def _uart_stream_samples(samples_batch):
@@ -934,6 +960,11 @@ def _uart_stream_samples(samples_batch):
     (8) channels in order: ch0..ch7 = R_Hand, R_Biceps, R_Triceps,
     R_Shoulder, L_Hand, L_Biceps, L_Triceps, L_Shoulder.
 
+    BACKPRESSURE: drops the entire batch silently if the host can't
+    keep up (out_waiting > UART_BACKLOG_BYTES). Better to lose one
+    10-line burst than block the DSP main loop. See the module-level
+    backpressure docblock for the full rationale.
+
     Applies the SAME spike filter as `ingest_sample()` so the host
     monitor.py doesn't see all-zero packets from wireless reacquisition
     glitches. Without this filter the host display showed sudden
@@ -941,6 +972,16 @@ def _uart_stream_samples(samples_batch):
     the same values away."""
     if _uart is None or samples_batch is None:
         return
+
+    # Drop early if the OS buffer is already pressured — never let the
+    # write() below block the main loop.
+    try:
+        if _uart.out_waiting > UART_BACKLOG_BYTES:
+            _uart_drops["samples"] += int(samples_batch.shape[0])
+            return
+    except Exception:
+        pass
+
     try:
         n_e = samples_batch.shape[0]
         buf = []
@@ -960,7 +1001,10 @@ def _uart_stream_samples(samples_batch):
         if buf:
             _uart.write(("\n".join(buf) + "\n").encode())
     except Exception:
-        pass
+        # SerialTimeoutException (host stalled longer than write_timeout)
+        # or any OSError on a transient USB-UART hiccup — count and move
+        # on. Never let UART errors stop inference.
+        _uart_drops["samples"] += int(samples_batch.shape[0])
 
 
 def _uart_send_prediction(group_name, gesture, conf, classes=None, probs=None):
@@ -970,14 +1014,23 @@ def _uart_send_prediction(group_name, gesture, conf, classes=None, probs=None):
         #pred,<ts_ms>,<group>,<top_gesture>,<top_conf>,cls0:p0,cls1:p1,...
 
     The leading ``#`` makes monitor.py's CSV parser skip it (it's not
-    6 ints), so the host can either:
+    8 ints), so the host can either:
       * ignore prediction lines and re-run inference locally
       * parse them as a debug overlay showing what the Pi predicted
     `classes` is the list of class names (model.classes_) and `probs`
     is the corresponding softmax vector. Both optional; if absent we
-    fall back to the old two-field format."""
+    fall back to the old two-field format.
+
+    Same backpressure protection as _uart_stream_samples — drops the
+    prediction if the host's serial buffer is full instead of blocking."""
     if _uart is None:
         return
+    try:
+        if _uart.out_waiting > UART_BACKLOG_BYTES:
+            _uart_drops["predictions"] += 1
+            return
+    except Exception:
+        pass
     try:
         ts = int(time.time() * 1000)
         line = f"#pred,{ts},{group_name},{gesture},{conf:.3f}"
@@ -987,7 +1040,7 @@ def _uart_send_prediction(group_name, gesture, conf, classes=None, probs=None):
             line = f"{line},{tail}"
         _uart.write((line + "\n").encode())
     except Exception:
-        pass
+        _uart_drops["predictions"] += 1
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1305,10 +1358,23 @@ def _update_hysteresis(gst, label, conf):
 
     Three thresholds, picked by the transition type:
       r→a  rest → any active gesture
-      a→r  active → rest
+      a→r  active → rest                  (handled by the rest fast-path
+                                           below; effectively immediate)
       a→a  active → another active gesture
 
-    Counter-reset semantics (fix for the perceived-lag bug):
+    REST FAST-PATH (predict_ch4.py-style):
+      When the classifier's argmax is "rest" the new state is committed
+      IMMEDIATELY, regardless of confidence and regardless of the
+      hyst_a2r vote count. Rationale: rest is the SAFE state — a false
+      "rest" merely halts motion, while a false NOT-rest keeps the arm
+      moving past the operator's intent. The AI team's reference
+      predict_ch4.py does this unconditionally and the user reports that
+      script returning to rest cleanly; without this fast-path, our
+      conf_floor (default 25%) was rejecting low-confidence rest votes
+      and leaving current_state stuck on the prior active gesture even
+      after the operator relaxed.
+
+    Counter-reset semantics for the non-rest path:
       * label == current_state → counter at 0; we're already there.
       * conf  <= prob_thresh   → REJECT this vote but DO NOT zero the
         counter. The old code reset on every below-threshold sample,
@@ -1323,16 +1389,26 @@ def _update_hysteresis(gst, label, conf):
         gst.consec_count = 0
         return
 
+    # ── Rest fast-path: predict_ch4.py-style unconditional commit ────
+    # Any rest argmax flips the state to "rest" and clears the vote
+    # counter. Confidence is intentionally NOT checked here; see the
+    # rationale block above. Note hyst_a2r is therefore essentially
+    # dead code — it survives in the JSON schema for backward compat
+    # but no longer gates the transition.
+    if label == "rest":
+        gst.current_state = "rest"
+        gst.consec_count  = 0
+        return
+
+    # ── Non-rest transitions: confidence-gated + vote-counted ────────
     # Low-confidence prediction: skip without punishing prior good votes.
     if conf <= gst.prob_thresh:
         return
 
     if gst.current_state == "rest":
         needed = gst.hyst_r2a
-    elif label == "rest":
-        needed = gst.hyst_a2r
     else:
-        needed = gst.hyst_a2a
+        needed = gst.hyst_a2a    # active → another active
     gst.consec_count += 1
     if gst.consec_count >= needed:
         gst.current_state = label
@@ -1542,6 +1618,18 @@ def _print_latency_waterfall(group_states, inferences, lat_accum):
         avg_seq = sum(lat_accum['seq']) / len(lat_accum['seq'])
         print(f"[DSP]   │ seq age:     {avg_seq:>8.0f} pkts "
               f"({avg_seq:.0f}ms @1kHz)", flush=True)
+    # UART backpressure: how many sample-pair entries / predictions we
+    # had to drop because the host wasn't keeping up. Steady-state
+    # should be 0; non-zero values indicate the host monitor.py is
+    # falling behind (CPU overloaded, ttyUSB renegotiating, etc.).
+    if _uart is not None:
+        ds  = _uart_drops["samples"]
+        dp  = _uart_drops["predictions"]
+        if ds or dp:
+            print(f"[DSP]   │ UART drops:   {ds:>8d} samples, "
+                  f"{dp} predictions (host backpressure)", flush=True)
+            _uart_drops["samples"]     = 0
+            _uart_drops["predictions"] = 0
     print(f"[DSP] ──────────────────────────────────────",         flush=True)
     for k in lat_accum:
         lat_accum[k].clear()
