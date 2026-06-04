@@ -23,8 +23,8 @@
         },
         "Wrist1": {
             "pca_ch": 7,
-            "min_us": 1001,
-            "max_us": 2002,
+            "min_us": 700,
+            "max_us": 2300,
             "neutral_us": 1500
         },
         "Wrist2": {
